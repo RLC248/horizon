@@ -9559,8 +9559,8 @@ impl Game<'_> {
                     if sound {
                         self.audio.play_button_click();
                     }
-                    self.title_action(action)?;
-                    self.reopen_data_packs()?;
+                    self.title_action(event_loop, action)?;
+                    self.reopen_data_packs(event_loop)?;
                 }
                 // AbstractSelectionList.mouseClicked: the world list takes a
                 // click of any button, so the middle one selects its row
@@ -9991,7 +9991,7 @@ impl Game<'_> {
                                 if sound {
                                     self.audio.play_button_click();
                                 }
-                                self.title_action(action)?;
+                                self.title_action(event_loop, action)?;
                             }
                             PhysicalKey::Code(
                                 key @ (KeyCode::Backspace
@@ -10033,7 +10033,7 @@ impl Game<'_> {
                             PhysicalKey::Code(KeyCode::Escape) => {
                                 if let Some(t) = self.title.as_mut() {
                                     t.escape();
-                                    self.reopen_data_packs()?;
+                                    self.reopen_data_packs(event_loop)?;
                                 }
                                 self.save_title_options();
                             }

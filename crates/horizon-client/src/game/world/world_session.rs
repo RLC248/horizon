@@ -6,23 +6,30 @@ use horizon_client::save::level_mods;
 impl Game<'_> {
     /// `onAbort`: the confirm screen's Back or Escape reopens the Data
     /// Packs screen with the selection it had.
-    pub(super) fn reopen_data_packs(&mut self) -> Result<()> {
+    pub(super) fn reopen_data_packs(&mut self, event_loop: &dyn EventLoopCtl) -> Result<()> {
         let action = self
             .title
             .as_mut()
             .and_then(|t| t.reopen_data_packs_action());
         if let Some(action) = action {
-            self.title_action(action)?;
+            self.title_action(event_loop, action)?;
         }
         Ok(())
     }
 
     /// What the title screen asked for, from a click or Enter.
-    pub(super) fn title_action(&mut self, action: Action) -> Result<()> {
+    pub(super) fn title_action(
+        &mut self,
+        event_loop: &dyn EventLoopCtl,
+        action: Action,
+    ) -> Result<()> {
         match action {
             // A splitscreen player's title never ends the process (P1's does).
             Action::Quit if self.options.split_guest => {}
-            Action::Quit => self.begin_closing_save(true)?,
+            Action::Quit => {
+                self.begin_closing_save(true)?;
+                event_loop.set_control_flow(ControlFlow::Poll);
+            }
             Action::Options => self.open_options(true),
             Action::Accessibility => {
                 self.open_options_at(true, horizon_client::options_ui::Page::Accessibility)

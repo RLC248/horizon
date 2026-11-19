@@ -326,7 +326,7 @@ impl Game<'_> {
         }
         // A Realm's address came back (GetServerDetailsTask hands over to ConnectScreen).
         if let Some(action) = self.title.as_mut().and_then(|t| t.take_connect_request())
-            && let Err(error) = self.title_action(action)
+            && let Err(error) = self.title_action(event_loop, action)
         {
             self.error = Some(error);
             event_loop.exit();
