@@ -355,11 +355,15 @@ impl ModsScreen {
 
     fn geo(&self) -> Geo {
         let content = (self.height - HEADER_H - FOOTER_H).max(0);
-        let columns_w = self.width.min(TOTAL_W);
+        let columns_w = self.width.clamp(0, TOTAL_W);
         let left = (self.width - columns_w) / 2;
         let top = HEADER_H - FRAME_PAD;
-        let panel_x = left + SIDEBAR_W + FRAME_PAD;
-        let panel_w = (columns_w - SIDEBAR_W - 2 * FRAME_PAD).max(0);
+        // At very small GUI sizes, reserve at least half the width for the panel.
+        let sidebar_w = SIDEBAR_W.min(columns_w / 2);
+        let sort_w = SORT_W.min(sidebar_w / 3);
+        let search_w = (sidebar_w - sort_w - 4).max(0);
+        let panel_x = left + sidebar_w + FRAME_PAD;
+        let panel_w = (columns_w - sidebar_w - 2 * FRAME_PAD).max(0);
         let view = (content - BUTTONS_H).max(0);
         let button_w = (panel_w / 3 - 1).max(0);
         let gap = (panel_w + 2 * FRAME_PAD - 3 * button_w) / 4;
@@ -368,12 +372,12 @@ impl ModsScreen {
         let footer_x = (self.width - (2 * footer_w + 4)) / 2;
         let footer_y = self.height - FOOTER_H + 6 + 5;
         Geo {
-            search: [left, top, SIDEBAR_W - SORT_W - 4, CONTROL_H],
-            sort: [left + SIDEBAR_W - SORT_W, top, SORT_W, CONTROL_H],
+            search: [left, top, search_w, CONTROL_H],
+            sort: [left + sidebar_w - sort_w, top, sort_w, CONTROL_H],
             list: [
                 left,
                 top + CONTROL_H + 6,
-                SIDEBAR_W,
+                sidebar_w,
                 (content - CONTROL_H - 5).max(0),
             ],
             panel: [panel_x, HEADER_H, panel_w, view],
@@ -1325,16 +1329,32 @@ mod tests {
         let (installed, mut info) = installed("zoom", "Zoom", Some(page));
         info.issues = Some("https://example.org/issues".into());
         let mods = mods(&[(installed, info)]);
-        for (width, height, frame_width) in [(320, 240, 170), (427, 240, 254), (640, 360, 254)] {
+        let [unicode_width, unicode_height] = crate::window::GuiSize::new([320, 240], 1, true)
+            .size
+            .map(|pixels| pixels as i32);
+        for (width, height, frame_width) in [
+            (unicode_width, unicode_height, 80),
+            (320, 240, 170),
+            (427, 240, 254),
+            (640, 360, 254),
+        ] {
             let mut screen = ModsScreen::new(width, height, true, &mods);
             let g = screen.geo();
-            let [lx, ly, lw, _] = g.list;
+            let [lx, ly, lw, lh] = g.list;
+            let fits = |[x, y, w, h]: [i32; 4]| {
+                w > 0 && h > 0 && x >= 0 && x + w <= width && y >= 0 && y + h <= height
+            };
+            assert!(fits(g.search) && fits(g.sort) && fits(g.list));
             let row = screen
                 .shown
                 .iter()
                 .position(|&i| screen.entries[i].id == "zoom")
                 .unwrap();
-            let row_y = ly + 2 + row as i32 * ROW_H;
+            let row_top = ly + 2 + row as i32 * ROW_H;
+            if row_top + ROW_H > ly + lh {
+                screen.scroll(f64::from(lx + 20), f64::from(ly + 1), -10.0);
+            }
+            let row_y = row_top - screen.list.amount as i32;
             screen.click(&m, f64::from(lx + 20), f64::from(row_y + ROW_H / 2));
             let draws = screen.draw(&m, (0, 0), 0, 0);
             let backgrounds: Vec<_> = draws
@@ -1364,10 +1384,7 @@ mod tests {
                 frame[0]
             );
             assert_eq!(frame[2], frame_width);
-            assert!(
-                frame[0] + frame[2] <= width,
-                "{width}x{height}: panel exceeds viewport"
-            );
+            assert!(fits(*frame), "{width}x{height}: panel exceeds viewport");
             assert!(
                 draws.iter().any(|draw| matches!(draw,
                     Draw::Fill {y0, x1, y1, color: -1, ..}
@@ -1383,17 +1400,21 @@ mod tests {
                 Action::OpenFolder,
                 Action::Back,
             ];
-            for ([x, y, w, h], action) in g.buttons.into_iter().chain(g.footer).zip(expected) {
-                assert!(w > 0 && h > 0 && x >= 0 && x + w <= width && y >= 0 && y + h <= height);
+            for (bounds, action) in g.buttons.into_iter().chain(g.footer).zip(expected) {
+                assert!(
+                    fits(bounds),
+                    "{width}x{height}: button {bounds:?} exceeds viewport"
+                );
+                let [x, y, w, h] = bounds;
                 assert!(draws.iter().any(
                     |draw| matches!(draw, Draw::Sprite { sprite, x: bx, y: by, w: bw, h: bh, .. }
                         if sprite == "widget/button" && (*bx, *by, *bw, *bh) == (x, y, w, h)
                     )
                 ));
                 assert_eq!(
-                    screen.click(&m, f64::from(x) + 0.5, f64::from(y + h) - 0.5),
+                    screen.click(&m, f64::from(x) + 0.5, f64::from(y + h / 2)),
                     (action, true),
-                    "{width}x{height}: action should work at the bottom-left inside edge",
+                    "{width}x{height}: action should work just inside the left edge",
                 );
             }
         }
