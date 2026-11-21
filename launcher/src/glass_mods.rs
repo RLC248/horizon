@@ -461,34 +461,7 @@ impl Launcher {
         }
         let shown = m.shown();
         if shown.is_empty() {
-            let line = if !m.results.is_empty() {
-                tr("Nothing found that runs in Horizon. Show everything lists the rest.")
-                    .to_string()
-            } else if m.searching || !m.searched {
-                tr("Searching…").to_string()
-            } else if let Some(target) = m.java_for(m.kind) {
-                trf(
-                    "Nothing found for {target}.",
-                    &[("target", &target.describe(m.kind))],
-                )
-            } else if !m.text.text().trim().is_empty() {
-                trf(
-                    "Nothing matches “{query}”.",
-                    &[("query", m.text.text().trim())],
-                )
-            } else if m.source == SourceId::Horizon {
-                tr("Nothing in Horizon's registry matches yet.").to_string()
-            } else if m.everything {
-                tr("Nothing found.").to_string()
-            } else {
-                tr("Nothing found that runs in Horizon. Show everything lists the rest.")
-                    .to_string()
-            };
-            let line = ui::text(14., FontWeight::NORMAL, 0.6)
-                .px(px(16.))
-                .py(px(24.))
-                .child(line);
-            return self.glass_mods_more(div().flex().flex_col().child(line), cx);
+            return self.mods_empty_results(cx);
         }
         let picked = self.mods_picked().map(|p| p.id.clone());
         // Registry pages add up behind More: only the rows near the view are built (`cull`).
@@ -630,29 +603,7 @@ impl Launcher {
             .flex()
             .flex_col()
             .child(rows.column(&scroll, total, 0., |_| false, row));
-        self.glass_mods_more(list, cx)
-    }
-
-    /// The list's More, under `list` while the source has more pages.
-    fn glass_mods_more(&self, mut list: Div, cx: &mut Context<Self>) -> Div {
-        let t = self.theme;
-        if self.mods.more {
-            let searching = self.mods.searching;
-            let offset = self.mods.results.len();
-            list = list.child(
-                div().flex().p(px(8.)).child(
-                    ui::quiet("mods-more", tr("More"), 36., &t)
-                        .when(searching, |d| d.opacity(0.5))
-                        .when(!searching, |d| {
-                            d.on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                                this.mods_search(offset);
-                                cx.notify();
-                            }))
-                        }),
-                ),
-            );
-        }
-        list
+        self.mods_more(list, cx)
     }
 
     /// The picked result, else the first; when a search finds nothing, the card shown last stays

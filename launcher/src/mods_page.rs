@@ -36,6 +36,8 @@ pub(super) const SOURCES: [(SourceId, &str); 2] = [
     (SourceId::Modrinth, "Modrinth"),
 ];
 const PAGE: usize = 20;
+/// Initial page plus at most two automatic pages for a compatible default list.
+const DEFAULT_MODRINTH_PAGES: usize = 3;
 
 #[path = "glass_mods.rs"]
 mod glass_mods;
@@ -46,8 +48,12 @@ pub(super) enum Event {
     Progress(String, f32),
     Done(Result<String, String>, bool),
     Updates(HashMap<(SourceId, String), String>),
-    /// A Java mod's check: its jar read, or why it couldn't be.
-    Checked((SourceId, String), Result<Box<Check>, String>),
+    /// A Java mod's check, scoped to the file-selection mode that started it.
+    Checked(
+        u64,
+        (SourceId, String),
+        Result<(String, Box<Check>), String>,
+    ),
     /// What a Horizon registry project says before install: signed or not, what it may do.
     About(HashMap<String, Vec<String>>),
     /// Registry files taken down that the launcher turned off.
@@ -78,6 +84,8 @@ pub(super) struct Mods {
     search: u64,
     searching: bool,
     searched: bool,
+    /// The filtered empty Modrinth query, as sent, for subsequent pages.
+    modrinth_defaults: Option<Query>,
     results: Vec<Project>,
     results_list: cull::Cull,
     installed_list: cull::Cull,
@@ -136,6 +144,8 @@ pub(super) struct Mods {
     tracked_native: std::cell::RefCell<Option<(String, bool)>>,
     /// Java mods' checks, by source and project.
     pub(super) checks: HashMap<(SourceId, String), Checking>,
+    check_everything: bool,
+    check_generation: u64,
     /// Horizon registry projects' trust and capabilities, by id ([`horizon::trust_and_capabilities`]).
     pub(super) about: HashMap<String, Vec<String>>,
     /// The project page, filters and images.
@@ -204,6 +214,7 @@ impl Mods {
             search: 0,
             searching: false,
             searched: false,
+            modrinth_defaults: None,
             results: Vec::new(),
             results_list: cull::Cull::default(),
             installed_list: cull::Cull::default(),
@@ -235,6 +246,8 @@ impl Mods {
             picked: None,
             shown: None,
             checks: HashMap::new(),
+            check_everything: false,
+            check_generation: 0,
             about: HashMap::new(),
             browse: Default::default(),
             tx,
@@ -257,27 +270,210 @@ impl Mods {
         self.java.as_ref().filter(|t| t.takes(kind))
     }
 
+    fn check_state(&self, project: &Project) -> Option<&Checking> {
+        self.checks.get(&(project.source, project.id.clone()))
+    }
+
     /// Whether a Java mod's check is still to come before it can be installed.
     pub(super) fn checking(&self, p: &Project) -> bool {
         self.java_for(p.kind).is_none()
             && p.kind == PackKind::Mod
             && p.source != SourceId::Horizon
-            && matches!(
-                self.checks.get(&(p.source, p.id.clone())),
-                None | Some(Checking::Running)
-            )
+            && matches!(self.check_state(p), None | Some(Checking::Running))
             && p.support().installable()
     }
 
     /// The results listed, by index into `results` (#18071).
     pub(super) fn shown(&self) -> Vec<usize> {
-        shown(&self.results, self.everything, |p| self.support(p))
+        shown(&self.results, self.everything, |p| self.listed_support(p))
     }
 
-    /// Flips Show everything. Its checks go too: `everything` picks which file a check reads.
+    /// Empty compatible browsing waits for a jar verdict before listing a mod.
+    fn listed_support(&self, p: &Project) -> Option<Support> {
+        if self.modrinth_defaults.is_some()
+            && !matches!(self.check_state(p), Some(Checking::Done(_)))
+        {
+            return None;
+        }
+        Some(self.support(p))
+    }
+
+    fn waiting_for_modrinth_defaults(&self) -> bool {
+        self.modrinth_defaults.is_some()
+            && (self.searching || self.results.iter().any(|p| self.checking(p)))
+    }
+
+    fn default_check_error(&self) -> Option<&str> {
+        self.modrinth_defaults.as_ref()?;
+        self.results.iter().find_map(|project| {
+            if let Some(Checking::Failed(error)) = self.check_state(project) {
+                Some(error.as_str())
+            } else {
+                None
+            }
+        })
+    }
+
+    /// Keep settled checks and let the normal worker pick up only the failed jars.
+    fn retry_default_checks(&mut self) -> Vec<Project> {
+        if self.modrinth_defaults.is_none() || self.waiting_for_modrinth_defaults() {
+            return Vec::new();
+        }
+        let failed: Vec<_> = self
+            .results
+            .iter()
+            .filter(|project| matches!(self.check_state(project), Some(Checking::Failed(_))))
+            .cloned()
+            .collect();
+        for project in &failed {
+            self.checks.remove(&(project.source, project.id.clone()));
+        }
+        failed
+    }
+
+    fn next_default_offset(&self) -> Option<usize> {
+        let offset = self.results.len();
+        (self.modrinth_defaults.is_some()
+            && self.java.is_none()
+            && self.more
+            && offset < PAGE * DEFAULT_MODRINTH_PAGES
+            && self.error.is_none()
+            && !self.waiting_for_modrinth_defaults()
+            && self.default_check_error().is_none()
+            && self
+                .results
+                .iter()
+                .all(|p| self.listed_support(p).is_none_or(|s| !s.installable())))
+        .then_some(offset)
+    }
+
+    /// Flips Show everything. The next search selects the corresponding jar checks.
     pub(super) fn toggle_everything(&mut self) {
         self.everything = !self.everything;
-        self.checks.clear();
+    }
+
+    fn begin_search(&mut self, offset: usize, keep: bool, glass: bool) -> (SourceId, Query) {
+        self.search += 1;
+        self.searching = true;
+        if offset != 0 {
+            if let Some(query) = &self.modrinth_defaults {
+                return (
+                    SourceId::Modrinth,
+                    Query {
+                        offset,
+                        ..query.clone()
+                    },
+                );
+            }
+        } else {
+            if !keep {
+                self.results.clear();
+                self.more = false;
+                self.results_list.reset();
+            }
+            self.installed_list.reset();
+        }
+        // In the glass look Show everything is only offered for Modrinth.
+        let everything = self.everything && !(glass && self.source == SourceId::Horizon);
+        // A Java instance's files are Modrinth's, for its version and loader.
+        let (source, query) = match self.java_for(self.kind) {
+            Some(target) => (
+                SourceId::Modrinth,
+                Query {
+                    offset,
+                    limit: PAGE,
+                    ..target.search(self.text.text(), self.kind, &self.browse.filters)
+                },
+            ),
+            None => (
+                self.source,
+                Query {
+                    everything,
+                    offset,
+                    limit: PAGE,
+                    filters: self.browse.filters.clone(),
+                    ..Query::new(self.text.text(), self.kind)
+                },
+            ),
+        };
+        if source == SourceId::Modrinth && query.kind == PackKind::Mod && self.java.is_none() {
+            let check_everything = query.everything || query.filters.other_version();
+            if self.check_everything != check_everything {
+                self.check_everything = check_everything;
+                self.check_generation += 1;
+                self.checks.clear();
+            }
+        }
+        if offset == 0 {
+            self.modrinth_defaults = (source == SourceId::Modrinth
+                && query.kind == PackKind::Mod
+                && self.java.is_none()
+                && !query.everything
+                && query.text.is_empty())
+            .then(|| query.clone());
+            if self.modrinth_defaults.is_some() {
+                self.error = None;
+            }
+        }
+        (source, query)
+    }
+
+    /// Accepts the current page and returns the projects whose jars may need checking.
+    fn finish_search(
+        &mut self,
+        search: u64,
+        offset: usize,
+        result: Result<Vec<Project>, String>,
+    ) -> Vec<Project> {
+        if search != self.search {
+            return Vec::new();
+        }
+        self.searching = false;
+        self.searched = true;
+        match result {
+            Ok(found) => {
+                self.more = found.len() == PAGE;
+                self.results.truncate(offset);
+                if offset == 0 {
+                    self.results_list.reset();
+                }
+                self.results.extend(found.iter().cloned());
+                self.error = None;
+                found
+            }
+            Err(e) => {
+                if offset == 0 {
+                    self.results.clear();
+                    self.more = false;
+                    self.results_list.reset();
+                }
+                self.error = Some(e);
+                Vec::new()
+            }
+        }
+    }
+
+    fn finish_check(
+        &mut self,
+        generation: u64,
+        key: (SourceId, String),
+        result: Result<(String, Box<Check>), String>,
+    ) -> Option<super::mods_project::Loaded> {
+        if generation != self.check_generation {
+            return None;
+        }
+        let (state, loaded) = match result {
+            Ok((version, check)) => {
+                let loaded =
+                    super::mods_project::Loaded::Checked(key.clone(), version, check.verdict);
+                (Checking::Done(check), Some(loaded))
+            }
+            Err(e) => (Checking::Failed(e), None),
+        };
+        self.checks.insert(key, state);
+        // Row visibility can change once a verdict arrives.
+        self.results_list.reset();
+        loaded
     }
 
     /// How well a result runs: a Java mod's from its check once it has one. In a Java
@@ -290,7 +486,7 @@ impl Mods {
         if p.kind != PackKind::Mod || p.source == SourceId::Horizon || !metadata.installable() {
             return metadata;
         }
-        match self.checks.get(&(p.source, p.id.clone())) {
+        match self.check_state(p) {
             Some(Checking::Done(c)) => java::support_of(c),
             Some(Checking::Failed(e)) => {
                 Support::Partial(trf("Not checked: {error}", &[("error", e)]))
@@ -306,11 +502,104 @@ impl Mods {
 fn shown(
     results: &[Project],
     everything: bool,
-    support: impl Fn(&Project) -> Support,
+    support: impl Fn(&Project) -> Option<Support>,
 ) -> Vec<usize> {
     (0..results.len())
-        .filter(|&i| everything || support(&results[i]).installable())
+        .filter(|&i| everything || support(&results[i]).is_some_and(|s| s.installable()))
         .collect()
+}
+
+fn empty_mod_results(
+    m: &Mods,
+    t: &theme::Theme,
+    retry: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    more: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> Div {
+    let waiting = m.waiting_for_modrinth_defaults();
+    let failed = if waiting {
+        None
+    } else {
+        m.default_check_error()
+    };
+    let line = if waiting {
+        tr("Searching…").to_string()
+    } else if let Some(error) = failed {
+        trf("Not checked: {error}", &[("error", error)])
+    } else if !m.results.is_empty() {
+        tr("Nothing found that runs in Horizon. Show everything lists the rest.").to_string()
+    } else if m.searching || !m.searched {
+        tr("Searching…").to_string()
+    } else if let Some(target) = m.java_for(m.kind) {
+        trf(
+            "Nothing found for {target}.",
+            &[("target", &target.describe(m.kind))],
+        )
+    } else if t.glass && !m.text.text().trim().is_empty() {
+        trf(
+            "Nothing matches “{query}”.",
+            &[("query", m.text.text().trim())],
+        )
+    } else if m.source == SourceId::Horizon {
+        tr("Nothing in Horizon's registry matches yet.").to_string()
+    } else if m.everything {
+        tr("Nothing found.").to_string()
+    } else {
+        tr("Nothing found that runs in Horizon. Show everything lists the rest.").to_string()
+    };
+    let message = if t.glass {
+        crate::glass_ui::text(14., FontWeight::NORMAL, 0.6)
+            .px(px(16.))
+            .py(px(24.))
+            .child(line)
+            .into_any_element()
+    } else {
+        centered(&line, t).into_any_element()
+    };
+    let feedback = div()
+        .flex()
+        .flex_col()
+        .child(message)
+        .when(failed.is_some(), |out| {
+            out.child(
+                div().flex().px(px(8.)).child(
+                    button("mods-check-retry", "Try again", Kind::Secondary, t)
+                        .debug_selector(|| "mods-check-retry".into())
+                        .on_click(retry),
+                ),
+            )
+        });
+    with_mod_results_more(feedback, m, t, more)
+}
+
+fn with_mod_results_more(
+    out: Div,
+    m: &Mods,
+    t: &theme::Theme,
+    on_more: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> Div {
+    if !m.more {
+        return out;
+    }
+    let more = if t.glass {
+        crate::glass_ui::quiet("mods-more", tr("More"), 36., t)
+    } else {
+        button("mods-more", "More", Kind::Ghost, t)
+    };
+    let more = if m.searching || m.waiting_for_modrinth_defaults() {
+        if t.glass {
+            more.opacity(0.5)
+        } else {
+            disabled(more)
+        }
+    } else {
+        more.on_click(on_more)
+    };
+    let row = if t.glass {
+        div().flex().p(px(8.))
+    } else {
+        div().flex().pt(px(16.))
+    };
+    out.child(row.child(more.debug_selector(|| "mods-more".into())))
 }
 
 /// `51404735` → `51.4M`.
@@ -419,31 +708,9 @@ impl Launcher {
                         p.mods = found;
                     }
                 }
-                Event::Found(search, offset, result) if search == m.search => {
-                    m.searching = false;
-                    m.searched = true;
-                    match result {
-                        Ok(found) => {
-                            m.more = found.len() == PAGE;
-                            m.results.truncate(offset);
-                            if offset == 0 {
-                                m.results_list.reset();
-                            }
-                            m.results.extend(found.iter().cloned());
-                            m.error = None;
-                            to_check.extend(found);
-                        }
-                        Err(e) => {
-                            if offset == 0 {
-                                m.results.clear();
-                                m.more = false;
-                                m.results_list.reset();
-                            }
-                            m.error = Some(e);
-                        }
-                    }
+                Event::Found(search, offset, result) => {
+                    to_check.extend(m.finish_search(search, offset, result));
                 }
-                Event::Found(..) => {}
                 Event::Progress(line, f) => {
                     if let Some(busy) = &mut m.busy {
                         busy.1 = line;
@@ -465,14 +732,8 @@ impl Launcher {
                     }
                 }
                 Event::Updates(found) => m.updates = found,
-                Event::Checked(key, result) => {
-                    let state = match result {
-                        Ok(c) => Checking::Done(c),
-                        Err(e) => Checking::Failed(e),
-                    };
-                    m.checks.insert(key, state);
-                    // A row may leave the list (`shown`): measure them again (`cull`).
-                    m.results_list.reset();
+                Event::Checked(generation, key, result) => {
+                    loaded.extend(m.finish_check(generation, key, result));
                 }
                 Event::Loaded(l) => loaded.push(l),
                 Event::About(about) => {
@@ -517,6 +778,12 @@ impl Launcher {
             }
         }
         self.mods_check(to_check);
+        if self.page == Page::Mods && self.mods.browse.open.is_none() {
+            if let Some(offset) = self.mods.next_default_offset() {
+                self.mods_search(offset);
+                changed = true;
+            }
+        }
         if done {
             // A data pack put into a world shows in its list on Home.
             self.world_packs.reread();
@@ -534,41 +801,8 @@ impl Launcher {
     /// Searches; with `keep`, the rows already listed stay on screen until the new ones arrive,
     /// so the page doesn't shrink (and the scroll doesn't jump to the top) while it waits.
     pub(super) fn mods_search_keeping(&mut self, offset: usize, keep: bool) {
-        // The glass look offers Show everything for Modrinth only: carried over to Horizon's
-        // registry, where it can't be seen or turned off, it would list what the note says is
-        // hidden.
-        let glass = self.theme.glass;
         let m = &mut self.mods;
-        let everything = m.everything && !(glass && m.source == SourceId::Horizon);
-        m.search += 1;
-        m.searching = true;
-        if offset == 0 {
-            if !keep {
-                m.results.clear();
-                m.more = false;
-                m.results_list.reset();
-            }
-            m.installed_list.reset();
-        }
-        let query = match m.java_for(m.kind) {
-            Some(target) => Query {
-                offset,
-                limit: PAGE,
-                ..target.search(m.text.text(), m.kind, &m.browse.filters)
-            },
-            None => Query {
-                everything,
-                offset,
-                limit: PAGE,
-                filters: m.browse.filters.clone(),
-                ..Query::new(m.text.text(), m.kind)
-            },
-        };
-        // A Java instance's files are Modrinth's; Horizon's registry is for Horizon.
-        let source = match m.java_for(m.kind) {
-            Some(_) => SourceId::Modrinth,
-            None => m.source,
-        };
+        let (source, query) = m.begin_search(offset, keep, self.theme.glass);
         let (tx, search) = (m.tx.clone(), m.search);
         std::thread::spawn(move || {
             let result = browser::source(source)
@@ -705,8 +939,7 @@ impl Launcher {
         for p in &todo {
             m.checks.insert((p.source, p.id.clone()), Checking::Running);
         }
-        // A version other than 26.3 asked for: check the newest file for 1.21 and later.
-        let everything = m.everything || m.browse.filters.other_version();
+        let (everything, generation) = (m.check_everything, m.check_generation);
         let tx = m.tx.clone();
         let queue = std::sync::Mutex::new(todo.into_iter());
         std::thread::spawn(move || {
@@ -723,18 +956,9 @@ impl Launcher {
                                 .and_then(|source| {
                                     java::check_project(&home, &*source, &p, everything, &|_| {})
                                 });
-                            // The project's page, if open, shows the verdict beside its version.
-                            if let Ok((version, check)) = &result {
-                                let key = (p.source, p.id.clone());
-                                let _ =
-                                    tx.send(Event::Loaded(super::mods_project::Loaded::Checked(
-                                        key,
-                                        version.id.clone(),
-                                        check.verdict,
-                                    )));
-                            }
-                            let result = result.map(|(_, check)| Box::new(check));
-                            let _ = tx.send(Event::Checked((p.source, p.id), result));
+                            let result =
+                                result.map(|(version, check)| (version.id, Box::new(check)));
+                            let _ = tx.send(Event::Checked(generation, (p.source, p.id), result));
                         }
                     });
                 }
@@ -1739,27 +1963,7 @@ impl Launcher {
         }
         let shown = m.shown();
         if shown.is_empty() {
-            let line = if !m.results.is_empty() {
-                tr("Nothing found that runs in Horizon. Show everything lists the rest.")
-            } else if m.searching || !m.searched {
-                tr("Searching…")
-            } else if let Some(target) = m.java_for(m.kind) {
-                return centered(
-                    &trf(
-                        "Nothing found for {target}.",
-                        &[("target", &target.describe(m.kind))],
-                    ),
-                    &t,
-                );
-            } else if m.source == SourceId::Horizon {
-                tr("Nothing in Horizon's registry matches yet.")
-            } else if m.everything {
-                tr("Nothing found.")
-            } else {
-                tr("Nothing found that runs in Horizon. Show everything lists the rest.")
-            };
-            let out = div().flex().flex_col().child(centered(line, &t));
-            return self.mods_more(out, cx);
+            return self.mods_empty_results(cx);
         }
         let result_count = shown.len();
         let rows = m.results_list.clone();
@@ -1880,24 +2084,26 @@ impl Launcher {
         self.mods_more(div().flex().flex_col().child(list), cx)
     }
 
-    /// The list's More, under `out` while the source has more pages.
-    fn mods_more(&self, mut out: Div, cx: &mut Context<Self>) -> Div {
-        let t = self.theme;
-        let m = &self.mods;
-        if m.more {
-            let mut more = button("mods-more", "More", Kind::Ghost, &t);
-            if m.searching {
-                more = disabled(more);
-            } else {
-                let offset = m.results.len();
-                more = more.on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                    this.mods_search(offset);
-                    cx.notify();
-                }));
-            }
-            out = out.child(div().flex().pt(px(16.)).child(more));
+    fn mods_empty_results(&self, cx: &mut Context<Self>) -> Div {
+        let retry = cx.listener(|this, _: &ClickEvent, _, cx| {
+            let failed = this.mods.retry_default_checks();
+            this.mods_check(failed);
+            cx.notify();
+        });
+        let more = cx.listener(Self::request_more_mods);
+        empty_mod_results(&self.mods, &self.theme, retry, more)
+    }
+
+    fn request_more_mods(&mut self, _: &ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
+        if self.mods.more && !self.mods.searching && !self.mods.waiting_for_modrinth_defaults() {
+            self.mods_search(self.mods.results.len());
+            cx.notify();
         }
-        out
+    }
+
+    fn mods_more(&self, out: Div, cx: &mut Context<Self>) -> Div {
+        let more = cx.listener(Self::request_more_mods);
+        with_mod_results_more(out, &self.mods, &self.theme, more)
     }
 }
 
@@ -1989,6 +2195,298 @@ fn source_switch(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(debug_assertions)]
+    use horizon_port_pack::check::Verdict;
+
+    fn modrinth_mod(id: &str) -> Project {
+        Project {
+            source: SourceId::Modrinth,
+            id: id.into(),
+            slug: id.into(),
+            title: id.into(),
+            summary: String::new(),
+            author: String::new(),
+            downloads: 0,
+            page: String::new(),
+            icon: None,
+            license: String::new(),
+            kind: PackKind::Mod,
+            game_versions: vec![browser::GAME.into()],
+            loaders: vec!["fabric".into()],
+            blocked: None,
+        }
+    }
+
+    #[cfg(debug_assertions)]
+    fn modrinth_tab(cx: &mut App) -> Mods {
+        let mut mods = Mods::new(cx);
+        mods.source = SourceId::Modrinth;
+        mods.kind = PackKind::Mod;
+        mods
+    }
+
+    #[cfg(debug_assertions)]
+    fn verdict(project: &Project, verdict: Verdict) -> (String, Box<Check>) {
+        (
+            "test-version".into(),
+            Box::new(Check {
+                mod_id: project.id.clone(),
+                name: project.title.clone(),
+                version: "1".into(),
+                loader: "fabric".into(),
+                license: "MIT".into(),
+                verdict,
+                summary: "Test verdict".into(),
+                ports: Vec::new(),
+                skipped: Vec::new(),
+                depends: Vec::new(),
+                namespaces: vec![project.id.clone()],
+                code: Default::default(),
+            }),
+        )
+    }
+
+    #[cfg(debug_assertions)]
+    fn complete_check(mods: &mut Mods, project: &Project, status: Verdict) {
+        let key = (project.source, project.id.clone());
+        mods.finish_check(mods.check_generation, key, Ok(verdict(project, status)));
+    }
+
+    #[cfg(debug_assertions)]
+    fn search_page(offset: usize) -> Vec<Project> {
+        (offset..offset + PAGE)
+            .map(|i| modrinth_mod(&format!("test-mod-{i}")))
+            .collect()
+    }
+
+    #[cfg(debug_assertions)]
+    #[gpui::test]
+    async fn empty_compatible_modrinth_search_holds_unchecked_rows(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            let mut mods = modrinth_tab(cx);
+            mods.browse.filters.categories.push("worldgen".into());
+            let (_, first_query) = mods.begin_search(0, false, false);
+            assert!(mods.waiting_for_modrinth_defaults());
+            let first_page = mods.finish_search(mods.search, 0, Ok(search_page(0)));
+            assert!(mods.shown().is_empty(), "unchecked mods should stay hidden");
+            assert!(mods.waiting_for_modrinth_defaults());
+            assert_eq!(mods.next_default_offset(), None);
+            let failed = &first_page[0];
+            let key = (failed.source, failed.id.clone());
+            mods.finish_check(mods.check_generation, key, Err("network timeout".into()));
+            for project in &first_page[1..] {
+                complete_check(&mut mods, project, Verdict::No);
+            }
+            assert!(mods.shown().is_empty());
+            assert_eq!(mods.default_check_error(), Some("network timeout"));
+            assert_eq!(mods.next_default_offset(), None);
+            assert_eq!(mods.retry_default_checks(), [failed.clone()]);
+            assert!(mods.waiting_for_modrinth_defaults());
+            complete_check(&mut mods, failed, Verdict::No);
+            assert!(mods.default_check_error().is_none());
+            assert_eq!(mods.next_default_offset(), Some(PAGE));
+
+            // An edit stays in the field until submitted. The continuation uses the sent query.
+            mods.text.set("not submitted".into());
+            let (source, next_query) = mods.begin_search(PAGE, false, false);
+            assert_eq!(source, SourceId::Modrinth);
+            assert_eq!(
+                next_query,
+                Query {
+                    offset: PAGE,
+                    ..first_query
+                }
+            );
+            let next_page = mods.finish_search(mods.search, PAGE, Ok(search_page(PAGE)));
+            complete_check(&mut mods, &next_page[0], Verdict::Works);
+            for project in &next_page[1..] {
+                complete_check(&mut mods, project, Verdict::No);
+            }
+            assert_eq!(mods.shown(), [PAGE]);
+            assert!(!mods.waiting_for_modrinth_defaults());
+            assert_eq!(mods.next_default_offset(), None);
+            assert!(mods.more, "the user can still ask for the next page");
+        });
+    }
+
+    #[cfg(debug_assertions)]
+    #[gpui::test]
+    async fn default_modrinth_page_budget_keeps_manual_more(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            let mut mods = modrinth_tab(cx);
+            for page in 0..DEFAULT_MODRINTH_PAGES {
+                let offset = page * PAGE;
+                mods.begin_search(offset, false, false);
+                let found = mods.finish_search(mods.search, offset, Ok(search_page(offset)));
+                for project in &found {
+                    complete_check(&mut mods, project, Verdict::No);
+                }
+            }
+            assert!(mods.more && mods.shown().is_empty());
+            assert!(!mods.waiting_for_modrinth_defaults());
+            assert_eq!(mods.next_default_offset(), None);
+
+            let offset = mods.results.len();
+            let (_, manual) = mods.begin_search(offset, false, false);
+            assert_eq!(manual.offset, PAGE * DEFAULT_MODRINTH_PAGES);
+            let last = modrinth_mod("last-page");
+            mods.finish_search(mods.search, offset, Ok(vec![last.clone()]));
+            complete_check(&mut mods, &last, Verdict::Works);
+            assert_eq!(mods.shown(), [offset]);
+            assert!(!mods.more, "a short page is the end of the results");
+        });
+    }
+
+    #[cfg(debug_assertions)]
+    struct EmptyModsView {
+        mods: Mods,
+        theme: theme::Theme,
+        more_requested: Option<usize>,
+        retried: Vec<String>,
+    }
+
+    #[cfg(debug_assertions)]
+    impl Render for EmptyModsView {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let retry = cx.listener(|this, _: &ClickEvent, _, cx| {
+                this.retried = this
+                    .mods
+                    .retry_default_checks()
+                    .into_iter()
+                    .map(|p| p.id)
+                    .collect();
+                cx.notify();
+            });
+            let more = cx.listener(|this, _: &ClickEvent, _, cx| {
+                this.more_requested = Some(this.mods.results.len());
+                cx.notify();
+            });
+            empty_mod_results(&self.mods, &self.theme, retry, more)
+        }
+    }
+
+    #[cfg(debug_assertions)]
+    #[gpui::test]
+    async fn both_modrinth_looks_keep_more_reachable_with_no_visible_rows(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        for glass in [false, true] {
+            for failed in [false, true] {
+                let (view, cx) = cx.add_window_view(|window, cx| {
+                    let mut mods = modrinth_tab(cx);
+                    for page in 0..DEFAULT_MODRINTH_PAGES {
+                        let offset = page * PAGE;
+                        mods.begin_search(offset, false, glass);
+                        let found =
+                            mods.finish_search(mods.search, offset, Ok(search_page(offset)));
+                        for project in &found {
+                            complete_check(&mut mods, project, Verdict::No);
+                        }
+                    }
+                    if failed {
+                        let key = (SourceId::Modrinth, "test-mod-0".into());
+                        mods.finish_check(
+                            mods.check_generation,
+                            key,
+                            Err("network timeout".into()),
+                        );
+                    }
+                    assert!(mods.more && mods.shown().is_empty());
+                    let mut theme = theme::from_settings(&Settings::default(), window.appearance());
+                    theme.glass = glass;
+                    EmptyModsView {
+                        mods,
+                        theme,
+                        more_requested: None,
+                        retried: Vec::new(),
+                    }
+                });
+                cx.run_until_parked();
+                let more = cx
+                    .debug_bounds("mods-more")
+                    .expect("More remains on screen");
+                assert!(more.size.width > px(0.) && more.size.height > px(0.));
+                cx.simulate_click(more.center(), gpui::Modifiers::default());
+                view.update(cx, |view, _| {
+                    assert_eq!(view.more_requested, Some(PAGE * DEFAULT_MODRINTH_PAGES));
+                });
+
+                let retry = cx.debug_bounds("mods-check-retry");
+                assert_eq!(retry.is_some(), failed);
+                if let Some(retry) = retry {
+                    cx.simulate_click(retry.center(), gpui::Modifiers::default());
+                    view.update(cx, |view, _| {
+                        assert_eq!(view.retried, ["test-mod-0"]);
+                        assert!(view.mods.waiting_for_modrinth_defaults());
+                    });
+                }
+            }
+        }
+    }
+
+    #[cfg(debug_assertions)]
+    #[gpui::test]
+    async fn modrinth_search_ignores_late_pages_and_superseded_checks(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(|cx| {
+            let mut mods = modrinth_tab(cx);
+            mods.begin_search(0, false, false);
+            let empty_search = mods.search;
+            mods.text.set("trees".into());
+            let (_, typed) = mods.begin_search(0, false, false);
+            let typed_search = mods.search;
+            assert_eq!(typed.text, "trees");
+            assert!(mods
+                .finish_search(empty_search, 0, Ok(vec![modrinth_mod("old-default")]))
+                .is_empty());
+            let project = modrinth_mod("matched-tree");
+            mods.finish_search(typed_search, 0, Ok(vec![project.clone()]));
+            assert_eq!(mods.shown(), [0], "typed results still show pending rows");
+
+            mods.text.set(String::new());
+            mods.begin_search(0, false, false);
+            let cleared_search = mods.search;
+            mods.finish_search(typed_search, 0, Err("late search error".into()));
+            assert!(mods.error.is_none() && mods.waiting_for_modrinth_defaults());
+
+            mods.toggle_everything();
+            let (_, show_all) = mods.begin_search(0, false, false);
+            let show_all_search = mods.search;
+            let old_checks = mods.check_generation;
+            assert!(show_all.everything);
+            mods.finish_search(show_all_search, 0, Ok(vec![project.clone()]));
+            assert_eq!(mods.shown(), [0]);
+            assert!(!mods.waiting_for_modrinth_defaults());
+            assert_eq!(mods.next_default_offset(), None);
+
+            mods.toggle_everything();
+            let (_, filtered) = mods.begin_search(0, false, false);
+            assert!(!filtered.everything);
+            assert_ne!(old_checks, mods.check_generation);
+            for previous in [cleared_search, show_all_search] {
+                assert!(mods
+                    .finish_search(previous, 0, Ok(vec![project.clone()]))
+                    .is_empty());
+            }
+            mods.finish_search(mods.search, 0, Ok(vec![project.clone()]));
+            let key = (project.source, project.id.clone());
+            assert!(mods
+                .finish_check(
+                    old_checks,
+                    key.clone(),
+                    Ok(verdict(&project, Verdict::Works))
+                )
+                .is_none());
+            assert!(mods.shown().is_empty());
+            assert!(mods.waiting_for_modrinth_defaults());
+            complete_check(&mut mods, &project, Verdict::Works);
+            assert!(mods
+                .finish_check(old_checks, key, Ok(verdict(&project, Verdict::No)))
+                .is_none());
+            assert_eq!(mods.shown(), [0]);
+        });
+    }
 
     #[test]
     fn counts_and_checksums_read_short() {
@@ -2002,31 +2500,17 @@ mod tests {
 
     #[test]
     fn show_everything_lists_what_doesnt_run() {
-        let project = |id: &str| Project {
-            source: SourceId::Modrinth,
-            id: id.into(),
-            slug: id.into(),
-            title: id.into(),
-            summary: String::new(),
-            author: String::new(),
-            downloads: 0,
-            page: String::new(),
-            icon: None,
-            license: String::new(),
-            kind: PackKind::Mod,
-            game_versions: vec!["26.3".into()],
-            loaders: vec!["fabric".into()],
-            blocked: None,
-        };
         let results: Vec<Project> = ["fabric-api", "ferrite-core", "sodium", "fresh"]
             .into_iter()
-            .map(project)
+            .map(modrinth_mod)
             .collect();
         // The verdicts the jar checks gave; `fresh` is still being checked.
-        let support = |p: &Project| match p.id.as_str() {
-            "fabric-api" | "sodium" => Support::No("Uses mixins.".into()),
-            "ferrite-core" => Support::Works,
-            _ => Support::Partial("Checking its jar…".into()),
+        let support = |p: &Project| {
+            Some(match p.id.as_str() {
+                "fabric-api" | "sodium" => Support::No("Uses mixins.".into()),
+                "ferrite-core" => Support::Works,
+                _ => Support::Partial("Checking its jar…".into()),
+            })
         };
         assert_eq!(shown(&results, false, support), [1, 3]);
         assert_eq!(shown(&results, true, support), [0, 1, 2, 3]);
