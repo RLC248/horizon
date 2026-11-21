@@ -1,0 +1,2 @@
+horizon-client game::remote::interaction_event_tests::primed_tnt_crosshair_tests::the_crosshair_picks_only_visible_in_reach_primed_tnt lib daily resources
+horizon-client game::remote::interaction_event_tests::primed_tnt_crosshair_tests::primed_tnt_packets_reach_the_hooks_and_leave_bystanders_untouched lib daily resources

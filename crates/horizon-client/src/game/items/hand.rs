@@ -620,6 +620,10 @@ impl Game<'_> {
             || before(self.interaction_hit().map(|h| h.1))
             || before(self.dragon_hit().map(|h| h.1))
             || before(
+                self.primed_tnt_hit(self.block_reach.max(self.entity_reach))
+                    .map(|(_, d)| d),
+            )
+            || before(
                 self.mob_hit_within(self.block_reach.max(self.entity_reach))
                     .map(|h| h.1),
             )
