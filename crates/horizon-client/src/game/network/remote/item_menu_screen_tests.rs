@@ -267,7 +267,7 @@ fn server_menu_packets(game: &mut Game<'_>, conn: u32) -> MenuPackets {
             C::ContainerSetContent(content) if content.container == window => Some(content.state),
             _ => None,
         })
-        .last()
+        .next_back()
         .unwrap();
     game.lan_guest_packet(
         conn,
