@@ -108,7 +108,9 @@ fn tree_soil(tree: &mut Value) {
     config.entry("below_trunk_provider").or_insert_with(|| {
         if force_dirt {
             dirt_provider
-        } else if dirt_provider == json!({"id": "minecraft:dirt"}) {
+        } else if dirt_provider == json!({"id": "minecraft:dirt"})
+            || dirt_provider == json!({"id": "minecraft:dirt", "properties": {}})
+        {
             vanilla("soil_beneath_tree")
         } else {
             json!({

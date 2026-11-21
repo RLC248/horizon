@@ -1533,29 +1533,42 @@ mod tests {
 
     #[test]
     fn mod_trees_use_vanilla_soil_unless_dirt_is_forced() {
+        let dirt = json!({"Name": "minecraft:dirt"});
+        let dirt_with_empty_properties = json!({"Name": "minecraft:dirt", "Properties": {}});
         let standard = json!("minecraft:soil_beneath_tree");
         let always_dirt = json!({"id": "minecraft:dirt"});
         for (state, force_dirt, explicit_provider, expected) in [
-            ("minecraft:dirt", None, None, standard.clone()),
-            ("minecraft:dirt", Some(false), None, standard),
-            ("minecraft:dirt", Some(true), None, always_dirt),
+            (dirt.clone(), None, None, standard.clone()),
+            (dirt.clone(), Some(false), None, standard.clone()),
+            (dirt_with_empty_properties.clone(), None, None, standard),
+            (dirt.clone(), Some(true), None, always_dirt),
             (
-                "x:nightfall_dirt",
+                json!({"Name": "x:nightfall_dirt"}),
                 Some(true),
                 None,
                 json!({"id": "x:nightfall_dirt"}),
             ),
             (
-                "minecraft:dirt",
+                dirt_with_empty_properties.clone(),
+                Some(true),
+                None,
+                json!({"id": "minecraft:dirt", "properties": {}}),
+            ),
+            (
+                dirt_with_empty_properties,
+                Some(false),
+                Some("x:custom_soil"),
+                json!("x:custom_soil"),
+            ),
+            (
+                dirt,
                 Some(true),
                 Some("x:custom_soil"),
                 json!("x:custom_soil"),
             ),
         ] {
             let mut legacy = json!({"type": "minecraft:tree", "config": {
-                "dirt_provider": {"type": "minecraft:simple_state_provider", "state": {
-                    "Name": state
-                }},
+                "dirt_provider": {"type": "minecraft:simple_state_provider", "state": state},
                 "ignore_vines": true
             }});
             if let Some(force) = force_dirt {
