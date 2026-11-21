@@ -1,4 +1,4 @@
-//! Open packets from the same content menu backed by a block and by a held item.
+//! Open packets from block-backed and held-item-backed menus.
 use super::*;
 use crate::game::{
     execution_role::ExecutionRole,
@@ -30,6 +30,8 @@ use std::{
 
 const MENU: &str = "packtest:storage";
 const MACHINE: &str = "packtest:machine";
+const CHEST_BLOCK: &str = "packtest:chest";
+const CHEST_MENU: &str = "minecraft:generic_9x1";
 const MACHINE_POS: Pos = (1, 64, 1);
 const CHILD_CASE: &str = "HORIZON_ITEM_MENU_SCREEN_CASE";
 static BLOCK_DRAWS: AtomicUsize = AtomicUsize::new(0);
@@ -62,7 +64,7 @@ impl mod_api::BlockPart for Machine {}
 #[mod_api::horizon_part]
 impl BlockEntityPart for Machine {
     fn screen(&self, _: &dyn Host, event: &mut ScreenEvent<'_>) -> Option<mod_api::Screen> {
-        assert_eq!(event.block, MACHINE);
+        assert!(matches!(event.block, MACHINE | CHEST_BLOCK));
         Some(mod_api::Screen {
             width: 176.0,
             height: 165.0,
@@ -74,7 +76,7 @@ impl BlockEntityPart for Machine {
     }
 
     fn screen_draw(&self, _: &dyn ClientHost, event: &mut ScreenDrawEvent<'_>) {
-        assert_eq!(event.block, MACHINE);
+        assert!(matches!(event.block, MACHINE | CHEST_BLOCK));
         BLOCK_DRAWS.fetch_add(1, Ordering::Relaxed);
     }
 }
@@ -83,29 +85,33 @@ struct TestMod;
 #[mod_api::__subscriptions]
 impl Hooks for TestMod {
     fn register(&self, registrar: &mut dyn Registrar, _: &RegistrationContext) {
-        let block = registrar.block_key(MACHINE);
         let kind = registrar
             .block_entity_type("machine")
-            .blocks(&[MACHINE])
+            .blocks(&[MACHINE, CHEST_BLOCK])
             .build();
         registrar.block_entity_part(&kind, Machine).unwrap();
-        registrar.block_container(
-            &block,
-            mod_api::ModContainer {
-                slots: 2,
-                menu: Some(MENU.into()),
-                ..Default::default()
-            },
-        );
+        for (block, slots, menu) in [(MACHINE, 2, MENU), (CHEST_BLOCK, 9, CHEST_MENU)] {
+            let block = registrar.block_key(block);
+            registrar.block_container(
+                &block,
+                mod_api::ModContainer {
+                    slots,
+                    menu: Some(menu.into()),
+                    ..Default::default()
+                },
+            );
+        }
         let item = registrar.item_key("minecraft:shulker_box");
         registrar.item_container(&item, |_: &dyn Host| Some(2));
         registrar.menu_part(MENU, Storage);
     }
 
     fn blocks(&self, _: &RegistrationContext, event: &mut mod_api::BlocksEvent<'_>) {
-        event
-            .blocks
-            .push(mod_api::Block::new(MACHINE, "minecraft:stone"));
+        for block in [MACHINE, CHEST_BLOCK] {
+            event
+                .blocks
+                .push(mod_api::Block::new(block, "minecraft:stone"));
+        }
     }
 
     fn screen_render_background(
@@ -156,11 +162,11 @@ fn content_root(package: &Path) -> PathBuf {
     root.prepared().to_owned()
 }
 
-fn place_machine(game: &mut Game<'_>) {
+fn place_machine(game: &mut Game<'_>, block: &str, slots: usize) {
     game.world
         .chunks
         .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
-    let state = game.pack.assets.registry.default_state(MACHINE).unwrap();
+    let state = game.pack.assets.registry.default_state(block).unwrap();
     let (x, y, z) = MACHINE_POS;
     game.world.set(x, y, z, state).unwrap();
     game.world.block_entities.insert(
@@ -168,7 +174,7 @@ fn place_machine(game: &mut Game<'_>) {
         BlockEntity::Mod(Box::new(horizon_client::containers::ModBlockEntity::new(
             MACHINE.into(),
             ModBlockEntityFields {
-                items: vec![None; 2],
+                items: vec![None; slots],
                 ..Default::default()
             },
         ))),
@@ -219,6 +225,11 @@ fn open_item_menu(game: &mut Game<'_>, uuid: u128) -> i32 {
         )
         .unwrap()
         .unwrap();
+    back_held_slots(host, player, window);
+    window
+}
+
+fn back_held_slots(host: &mut dyn ServerHost, player: mod_api::PlayerRef, window: i32) {
     let places = (0..2)
         .map(|slot| MenuSlotPlace::HeldItem {
             hand: mod_api::Hand::Main,
@@ -226,13 +237,14 @@ fn open_item_menu(game: &mut Game<'_>, uuid: u128) -> i32 {
         })
         .collect();
     player.back_mod_menu_slots(host, window, places).unwrap();
-    window
 }
 
 struct MenuPackets {
     block: Vec<C>,
     item: Vec<C>,
     after_move: Vec<C>,
+    chest_block: Vec<C>,
+    chest_item: Vec<C>,
 }
 
 fn server_menu_packets(game: &mut Game<'_>, conn: u32) -> MenuPackets {
@@ -253,7 +265,7 @@ fn server_menu_packets(game: &mut Game<'_>, conn: u32) -> MenuPackets {
     // The game fixture does not run the first server tick that installs this table.
     let containers = game.native_containers();
     game.world.block_entities.set_mod_containers(containers);
-    place_machine(game);
+    place_machine(game, MACHINE, 2);
     assert_eq!(game.mod_menu_at(MACHINE_POS), Some(MENU));
     assert!(game.lan_open_container(conn, MACHINE_POS));
     assert_eq!(game.native_hidden_slots(MACHINE_POS, 2), [1]);
@@ -295,10 +307,32 @@ fn server_menu_packets(game: &mut Game<'_>, conn: u32) -> MenuPackets {
         7,
         "the move writes through the held item"
     );
+    let after_move = take_menu_packets(&rx);
+    place_machine(game, CHEST_BLOCK, 9);
+    assert!(game.lan_open_container(conn, MACHINE_POS));
+    let chest_block = take_menu_packets(&rx);
+
+    let host: &mut dyn ServerHost = game;
+    let player = host.player(uuid).unwrap();
+    let window = host
+        .open_menu(
+            uuid,
+            1,
+            mod_api::Text::literal("Storage in a chest layout"),
+            Vec::new(),
+            MenuReplace::InPlace,
+        )
+        .unwrap()
+        .unwrap();
+    back_held_slots(host, player, window);
+    let chest_item = take_menu_packets(&rx);
+
     MenuPackets {
         block,
         item,
-        after_move: take_menu_packets(&rx),
+        after_move,
+        chest_block,
+        chest_item,
     }
 }
 
@@ -310,7 +344,7 @@ fn apply(game: &mut Game<'_>, packets: Vec<C>) {
 }
 
 fn check_client_menus(game: &mut Game<'_>, packets: MenuPackets) {
-    place_machine(game);
+    place_machine(game, MACHINE, 2);
     apply(game, packets.block);
     assert_eq!(
         game.screen_pos(),
@@ -350,6 +384,34 @@ fn check_client_menus(game: &mut Game<'_>, packets: MenuPackets) {
         "the client shows the new stack in the declared slot"
     );
     assert!(slots[1].is_none());
+
+    check_chest_screen_origins(game, packets.chest_block, packets.chest_item);
+}
+
+fn check_chest_screen_origins(game: &mut Game<'_>, block: Vec<C>, item: Vec<C>) {
+    let origin = |packet: &C| matches!(packet, C::CustomPayload(p) if p.channel == horizon_protocol::menu_extra::CHANNEL);
+    assert!(block.iter().any(origin));
+    assert!(!item.iter().any(origin));
+    let bare_block = block.iter().filter(|p| !origin(p)).cloned().collect();
+
+    place_machine(game, CHEST_BLOCK, 9);
+    apply(game, block);
+    assert_eq!(game.native_screen_slots(), Some(vec![300]));
+
+    // The stock chest opened by the item has the same type as the last clicked block.
+    let clicked = [MACHINE_POS.0, MACHINE_POS.1, MACHINE_POS.2];
+    game.remote.as_mut().unwrap().use_target = Some(clicked);
+    apply(game, item);
+    assert_eq!(game.remote_menu_type(), Some(CHEST_MENU));
+    assert_eq!(game.native_screen_slots(), None);
+    assert_eq!(game.slot_count(), 45);
+
+    // An older server that never negotiated menu-extra can open a block's bare window.
+    let remote = game.remote.as_mut().unwrap();
+    Arc::make_mut(&mut remote.registries).menu_extra_revision = 0;
+    remote.use_target = Some(clicked);
+    apply(game, bare_block);
+    assert_eq!(game.native_screen_slots(), Some(vec![300]));
 }
 
 #[test]
