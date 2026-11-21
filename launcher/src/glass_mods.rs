@@ -25,6 +25,37 @@ use horizon_theme::glass::{ink, radius};
 /// The project card's width (`lg:grid-cols-[minmax(0,1fr)_360px]`).
 const DETAIL: f32 = 360.;
 
+impl Mods {
+    /// The picked result, else the first. Unfiltered browsing can keep the last detail
+    /// card when a search finds nothing, as in the mockup.
+    pub(super) fn picked_project(&mut self) -> Option<Project> {
+        let shown = self.shown();
+        let mut listed = shown.iter().map(|&i| &self.results[i]);
+        let found = self
+            .picked
+            .as_ref()
+            .and_then(|id| listed.clone().find(|p| &p.id == id))
+            .or(listed.next())
+            .cloned();
+        match found {
+            Some(p) => {
+                self.shown = Some(p.clone());
+                Some(p)
+            }
+            None if self.modrinth_defaults.is_none()
+                && self.searched
+                && !self.searching
+                && self.error.is_none() =>
+            {
+                self.shown
+                    .clone()
+                    .filter(|p| p.kind == self.kind && p.source == self.source)
+            }
+            None => None,
+        }
+    }
+}
+
 impl Launcher {
     /// The search's placeholder: the registry's count when it is listed whole.
     pub(super) fn mods_placeholder(&self) -> SharedString {
@@ -396,14 +427,11 @@ impl Launcher {
             } else {
                 tr("The search didn't go through.")
             };
-            let mut actions = div().flex().flex_wrap().gap(px(8.)).child(
-                button("mods-retry", "Try again", Kind::Secondary, &t).on_click(cx.listener(
-                    |this, _: &ClickEvent, _, cx| {
-                        this.mods_search(0);
-                        cx.notify();
-                    },
-                )),
-            );
+            let mut actions = div()
+                .flex()
+                .flex_wrap()
+                .gap(px(8.))
+                .child(self.mods_search_retry_button(cx));
             if horizon {
                 actions = actions.child(
                     button(
@@ -463,7 +491,7 @@ impl Launcher {
         if shown.is_empty() {
             return self.mods_empty_results(cx);
         }
-        let picked = self.mods_picked().map(|p| p.id.clone());
+        let picked = self.mods.picked_project().map(|p| p.id);
         // Registry pages add up behind More: only the rows near the view are built (`cull`).
         let (rows, scroll) = (
             self.mods.results_list.clone(),
@@ -606,35 +634,10 @@ impl Launcher {
         self.mods_more(list, cx)
     }
 
-    /// The picked result, else the first; when a search finds nothing, the card shown last stays
-    /// (the mockup's detail keeps its mod).
-    fn mods_picked(&mut self) -> Option<Project> {
-        let shown = self.mods.shown();
-        let m = &mut self.mods;
-        let mut listed = shown.iter().map(|&i| &m.results[i]);
-        let found = m
-            .picked
-            .as_ref()
-            .and_then(|id| listed.clone().find(|p| &p.id == id))
-            .or(listed.next())
-            .cloned();
-        match found {
-            Some(p) => {
-                m.shown = Some(p.clone());
-                Some(p)
-            }
-            None if m.searched && !m.searching && m.error.is_none() => m
-                .shown
-                .clone()
-                .filter(|p| p.kind == m.kind && p.source == m.source),
-            None => None,
-        }
-    }
-
     /// The picked project's card (`ModDetail`).
     fn glass_mod_detail(&mut self, instance: &str, cx: &mut Context<Self>) -> Option<Div> {
         let t = self.theme;
-        let p = self.mods_picked()?;
+        let p = self.mods.picked_project()?;
         let icon = self.mods_icon(&p, 64.);
         let m = &self.mods;
         let support = m.support(&p);
