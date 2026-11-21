@@ -2280,7 +2280,8 @@ mod tests {
             assert!(mods.shown().is_empty());
             assert_eq!(mods.default_check_error(), Some("network timeout"));
             assert_eq!(mods.next_default_offset(), None);
-            assert_eq!(mods.retry_default_checks(), [failed.clone()]);
+            let retried = mods.retry_default_checks();
+            assert_eq!(retried.as_slice(), std::slice::from_ref(failed));
             assert!(mods.waiting_for_modrinth_defaults());
             complete_check(&mut mods, failed, Verdict::No);
             assert!(mods.default_check_error().is_none());
