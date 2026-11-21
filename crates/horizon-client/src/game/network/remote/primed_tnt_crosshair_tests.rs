@@ -79,6 +79,12 @@ fn the_crosshair_picks_only_visible_in_reach_primed_tnt() {
                 if case == "out_of_reach" {
                     game.tnts[0].position.z = 7.5;
                 } else if case == "removed" {
+                    game.tnts[0].position.z = 5.5;
+                    assert_eq!(
+                        game.pick_entity_hit_at().and_then(|(_, target)| target),
+                        Some(id),
+                        "the TNT is in reach before the removal packet"
+                    );
                     game.remove_entity(id);
                 }
                 let hit = game
@@ -92,6 +98,7 @@ fn the_crosshair_picks_only_visible_in_reach_primed_tnt() {
                     assert_eq!(*spy.0.lock().unwrap(), ["attack"]);
                     spy.0.lock().unwrap().clear();
                     game.world.set(0, 65, 6, stone).unwrap();
+                    assert_eq!(game.pick().map(|hit| hit.pos), Some([0, 65, 6]));
                     game.inventory[game.selected] = Some(ItemStack::new("minecraft:stick", 1));
                     game.offhand = None;
                     game.remote_use(mod_api::InteractionAttempt::Press);
