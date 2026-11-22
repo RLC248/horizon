@@ -1,6 +1,6 @@
 //! The Mods page: its tabs are the kinds (mods, modpacks, resource packs, shader packs, data
-//! packs). Search Horizon's own registry for what was made for Horizon, or Modrinth (CurseForge:
-//! coming soon) for Java mods, modpacks, resource packs and data packs (a Java instance's files
+//! packs). Search Horizon's own registry for what was made for Horizon, or Modrinth for
+//! resource packs, shader packs and data packs (a Java instance's supported files
 //! always come from Modrinth, for its version), see where each comes
 //! from and how well it runs (a Java mod's jar is checked first; a Horizon mod says whether it is
 //! signed and what it may do), install it with its checksum checked, turn Horizon mods on and
@@ -29,15 +29,12 @@ const KINDS: [(PackKind, &str, &str); 5] = [
 ];
 /// Java mods checked at once.
 const CHECKING: usize = 2;
-/// The sources to pick from on the tabs that have both ([`switches`]); CurseForge is shown
-/// beside them as coming soon.
-pub(super) const SOURCES: [(SourceId, &str); 2] = [
+const PAGE: usize = 20;
+const DEFAULT_SCAN_PAGES: usize = 3;
+const SOURCES: [(SourceId, &str); 2] = [
     (SourceId::Horizon, "Horizon"),
     (SourceId::Modrinth, "Modrinth"),
 ];
-const PAGE: usize = 20;
-/// Initial page plus at most two automatic pages for a compatible default list.
-const DEFAULT_MODRINTH_PAGES: usize = 3;
 
 #[path = "glass_mods.rs"]
 mod glass_mods;
@@ -47,13 +44,16 @@ pub(super) enum Event {
     Found(u64, usize, Result<Vec<Project>, String>),
     Progress(String, f32),
     Done(Result<String, String>, bool),
-    Updates(HashMap<(SourceId, String), String>),
-    /// A Java mod's check, scoped to the file-selection mode that started it.
-    Checked(
-        u64,
-        (SourceId, String),
-        Result<(String, Box<Check>), java::ProjectCheckError>,
-    ),
+    ConfirmPack {
+        title: String,
+        reason: String,
+        action: &'static str,
+        reply: Sender<bool>,
+    },
+    UpdateApplied(PathBuf, (SourceId, String)),
+    Updates(u64, HashMap<(SourceId, String), UpdateOffer>),
+    /// A Java mod's check: its jar read, or why it couldn't be.
+    Checked((SourceId, String), Result<Box<Check>, String>),
     /// What a Horizon registry project says before install: signed or not, what it may do.
     About(HashMap<String, Vec<String>>),
     /// Registry files taken down that the launcher turned off.
@@ -66,12 +66,58 @@ pub(super) enum Event {
     Palette(u64, Vec<Project>),
 }
 
+pub(super) struct UpdateOffer {
+    installed_version: String,
+    number: String,
+}
+
+fn current_offers(
+    found: HashMap<(SourceId, String), UpdateOffer>,
+    installed: &installed::Installed,
+) -> HashMap<(SourceId, String), String> {
+    found
+        .into_iter()
+        .filter_map(|((source, id), offer)| {
+            installed
+                .find(source, &id)
+                .filter(|entry| entry.version == offer.installed_version)
+                .map(|_| ((source, id), offer.number))
+        })
+        .collect()
+}
+
+fn confirm_pack(tx: &Sender<Event>, title: String, reason: &str, action: &'static str) -> bool {
+    let (reply, answer) = channel();
+    tx.send(Event::ConfirmPack {
+        title,
+        reason: reason.to_owned(),
+        action,
+        reply,
+    })
+    .is_ok()
+        && answer.recv().unwrap_or(false)
+}
+
 /// Where a Java mod's check is.
 pub(super) enum Checking {
     Running,
     Done(Box<Check>),
-    Unavailable(String),
     Failed(String),
+}
+
+pub(super) enum InstallRequest {
+    Browse(Box<Project>),
+    Palette(Box<Project>),
+    Installed(SourceId, String),
+}
+
+impl InstallRequest {
+    pub(super) fn item(&self) -> (SourceId, &str) {
+        match self {
+            Self::Browse(p) | Self::Palette(p) => (p.source, &p.id),
+            Self::Installed(source, id) => (*source, id),
+        }
+    }
 }
 
 pub(super) struct Mods {
@@ -80,15 +126,13 @@ pub(super) struct Mods {
     text: LineEdit,
     focus: FocusHandle,
     pub(super) focused: bool,
-    everything: bool,
+    pub(super) everything: bool,
     /// Which search is the current one; answers for older ones are dropped.
     search: u64,
+    /// The submitted page, including filters and offset, for More and Try again.
+    submitted: Option<Query>,
     searching: bool,
     searched: bool,
-    /// The exact request to retry if this search fails, including its offset.
-    submitted: Option<(SourceId, Query)>,
-    /// The filtered empty Modrinth query, as sent, for subsequent pages.
-    modrinth_defaults: Option<Query>,
     results: Vec<Project>,
     results_list: cull::Cull,
     installed_list: cull::Cull,
@@ -106,6 +150,7 @@ pub(super) struct Mods {
     loaded: bool,
     /// Whether the page searched for the instance as it is (its version and loader).
     asked: bool,
+    instance_id: Option<String>,
     /// The game folder the browser installs into and lists: the selected instance's.
     home: Option<PathBuf>,
     /// The selected Java instance's version and loader: its mods and resource packs are the
@@ -118,6 +163,7 @@ pub(super) struct Mods {
     pub(super) busy: Option<(String, String, f32)>,
     pub(super) message: Option<Result<String, String>>,
     pub(super) updates: HashMap<(SourceId, String), String>,
+    update_check: u64,
     confirm_remove: Option<String>,
     /// The project the glass look's detail card shows; the first result when none is.
     pub(super) picked: Option<String>,
@@ -147,8 +193,6 @@ pub(super) struct Mods {
     tracked_native: std::cell::RefCell<Option<(String, bool)>>,
     /// Java mods' checks, by source and project.
     pub(super) checks: HashMap<(SourceId, String), Checking>,
-    check_everything: bool,
-    check_generation: u64,
     /// Horizon registry projects' trust and capabilities, by id ([`horizon::trust_and_capabilities`]).
     pub(super) about: HashMap<String, Vec<String>>,
     /// The project page, filters and images.
@@ -215,10 +259,9 @@ impl Mods {
             focused: false,
             everything: false,
             search: 0,
+            submitted: None,
             searching: false,
             searched: false,
-            submitted: None,
-            modrinth_defaults: None,
             results: Vec::new(),
             results_list: cull::Cull::default(),
             installed_list: cull::Cull::default(),
@@ -231,6 +274,7 @@ impl Mods {
             checked_for: None,
             loaded: false,
             asked: false,
+            instance_id: None,
             home: None,
             java: None,
             worlds: Vec::new(),
@@ -246,12 +290,11 @@ impl Mods {
             native_files: Default::default(),
             tracked_native: Default::default(),
             updates: HashMap::new(),
+            update_check: 0,
             confirm_remove: None,
             picked: None,
             shown: None,
             checks: HashMap::new(),
-            check_everything: false,
-            check_generation: 0,
             about: HashMap::new(),
             browse: Default::default(),
             tx,
@@ -274,8 +317,148 @@ impl Mods {
         self.java.as_ref().filter(|t| t.takes(kind))
     }
 
-    fn check_state(&self, project: &Project) -> Option<&Checking> {
-        self.checks.get(&(project.source, project.id.clone()))
+    pub(super) fn source(&self) -> SourceId {
+        browse_source(self.kind, self.source, self.java.as_ref())
+    }
+
+    fn install_kind(&self, request: &InstallRequest) -> Option<PackKind> {
+        match request {
+            InstallRequest::Browse(p) if p.kind == self.kind && p.source == self.source() => {
+                Some(p.kind)
+            }
+            InstallRequest::Palette(p)
+                if p.kind == PackKind::Mod && p.source == SourceId::Horizon =>
+            {
+                Some(p.kind)
+            }
+            InstallRequest::Installed(source, id) => self
+                .installed
+                .iter()
+                .find(|e| e.source == *source && e.project == *id)
+                .map(|e| e.kind),
+            _ => None,
+        }
+    }
+
+    fn new_query(&self) -> Query {
+        let everything = self.everything && self.source() != SourceId::Horizon;
+        match self.java_for(self.kind) {
+            Some(target) => Query {
+                offset: 0,
+                limit: PAGE,
+                ..target.search(self.text.text(), self.kind, &self.browse.filters)
+            },
+            None => Query {
+                everything,
+                offset: 0,
+                limit: PAGE,
+                filters: self.browse.filters.clone(),
+                ..Query::new(self.text.text(), self.kind)
+            },
+        }
+    }
+
+    fn begin_page(&mut self, offset: usize) -> Option<Query> {
+        let query = self.submitted.as_mut()?;
+        query.offset = offset;
+        self.asked = true;
+        self.search += 1;
+        self.searching = true;
+        self.error = None;
+        Some(query.clone())
+    }
+
+    /// Only the filtered default pack browser may advance on its own.
+    fn filtered_pack_defaults(&self) -> bool {
+        self.can_show_everything()
+            && self
+                .submitted
+                .as_ref()
+                .is_some_and(|query| query.text.is_empty() && !query.everything)
+    }
+
+    fn next_default_page(&self) -> Option<usize> {
+        let offset = self.results.len();
+        (self.more
+            && offset < PAGE * DEFAULT_SCAN_PAGES
+            && self.filtered_pack_defaults()
+            && self.shown().is_empty())
+        .then_some(offset)
+    }
+
+    fn reset_browse_context(&mut self) {
+        self.asked = false;
+        self.everything = false;
+        self.browse.filters = Default::default();
+        self.browse.open = None;
+        self.picked = None;
+        self.shown = None;
+        self.search += 1;
+        self.submitted = None;
+        self.searching = false;
+        self.searched = false;
+        self.error = None;
+        self.more = false;
+        self.results.clear();
+        self.results_list.reset();
+    }
+
+    fn set_target(
+        &mut self,
+        instance_id: Option<String>,
+        home: Option<PathBuf>,
+        java: Option<Target>,
+    ) -> bool {
+        let changed = self.instance_id != instance_id || self.home != home || self.java != java;
+        if changed {
+            self.reset_browse_context();
+            self.update_check += 1;
+            self.instance_id = instance_id;
+            self.home = home;
+            self.java = java;
+        }
+        changed
+    }
+
+    fn set_kind(&mut self, kind: PackKind) -> bool {
+        if self.kind == kind {
+            return false;
+        }
+        self.kind = kind;
+        self.source = source_for(kind);
+        self.reset_browse_context();
+        if kind == PackKind::DataPack {
+            self.read_worlds();
+        }
+        true
+    }
+
+    /// Keep the last card across an empty search within the current browse context.
+    fn picked_project(&mut self) -> Option<Project> {
+        let shown = self.shown();
+        let mut listed = shown.iter().map(|&i| &self.results[i]);
+        let found = self
+            .picked
+            .as_ref()
+            .and_then(|id| listed.clone().find(|p| &p.id == id))
+            .or(listed.next())
+            .cloned();
+        if let Some(p) = found {
+            self.shown = Some(p.clone());
+            return Some(p);
+        }
+        self.shown.clone().filter(|p| {
+            self.searched
+                && !self.filtered_pack_defaults()
+                && !self.searching
+                && self.error.is_none()
+                && p.kind == self.kind
+                && p.source == self.source()
+        })
+    }
+
+    fn can_show_everything(&self) -> bool {
+        self.source() == SourceId::Modrinth && self.java.is_none() && self.kind != PackKind::Shader
     }
 
     /// Whether a Java mod's check is still to come before it can be installed.
@@ -283,243 +466,38 @@ impl Mods {
         self.java_for(p.kind).is_none()
             && p.kind == PackKind::Mod
             && p.source != SourceId::Horizon
+            && matches!(
+                self.checks.get(&(p.source, p.id.clone())),
+                None | Some(Checking::Running)
+            )
             && p.support().installable()
-            && (matches!(self.check_state(p), None | Some(Checking::Running))
-                || self.changing_check_mode())
     }
 
     /// The results listed, by index into `results` (#18071).
     pub(super) fn shown(&self) -> Vec<usize> {
-        shown(&self.results, self.everything, |p| self.listed_support(p))
+        shown(&self.results, self.everything, |p| self.support(p))
     }
 
-    /// Empty compatible browsing waits for a jar verdict before listing a mod.
-    fn listed_support(&self, p: &Project) -> Option<Support> {
-        if self.modrinth_defaults.is_some()
-            && !matches!(self.check_state(p), Some(Checking::Done(_)))
-        {
-            return None;
-        }
-        Some(self.support(p))
-    }
-
-    fn waiting_for_modrinth_defaults(&self) -> bool {
-        self.modrinth_defaults.is_some()
-            && (self.searching || self.results.iter().any(|p| self.checking(p)))
-    }
-
-    fn default_check_error(&self) -> Option<&str> {
-        self.modrinth_defaults.as_ref()?;
-        self.results.iter().find_map(|project| {
-            if let Some(Checking::Failed(error)) = self.check_state(project) {
-                Some(error.as_str())
-            } else {
-                None
-            }
-        })
-    }
-
-    /// Keep settled checks and let the normal worker pick up only the failed jars.
-    fn retry_default_checks(&mut self) -> Vec<Project> {
-        if self.modrinth_defaults.is_none() || self.waiting_for_modrinth_defaults() {
-            return Vec::new();
-        }
-        let failed: Vec<_> = self
-            .results
-            .iter()
-            .filter(|project| matches!(self.check_state(project), Some(Checking::Failed(_))))
-            .cloned()
-            .collect();
-        for project in &failed {
-            self.checks.remove(&(project.source, project.id.clone()));
-        }
-        failed
-    }
-
-    fn next_default_offset(&self) -> Option<usize> {
-        let offset = self.results.len();
-        (self.modrinth_defaults.is_some()
-            && self.java.is_none()
-            && self.more
-            && offset < PAGE * DEFAULT_MODRINTH_PAGES
-            && self.error.is_none()
-            && !self.waiting_for_modrinth_defaults()
-            && self.default_check_error().is_none()
-            && self
-                .results
-                .iter()
-                .all(|p| self.listed_support(p).is_none_or(|s| !s.installable())))
-        .then_some(offset)
-    }
-
-    /// Flips Show everything. The next search selects the corresponding jar checks.
+    /// Flips Show everything. Its checks go too: `everything` picks which file a check reads.
     pub(super) fn toggle_everything(&mut self) {
         self.everything = !self.everything;
-    }
-
-    fn check_mode(&self, source: SourceId, query: &Query) -> Option<bool> {
-        (source == SourceId::Modrinth && query.kind == PackKind::Mod && self.java.is_none())
-            .then(|| query.everything || query.filters.other_version())
-    }
-
-    /// Kept rows retain their layout while the new filter loads. Their old checks don't
-    /// enable installs under the pending file-selection mode.
-    fn changing_check_mode(&self) -> bool {
-        self.searching
-            && self
-                .submitted
-                .as_ref()
-                .and_then(|(source, query)| self.check_mode(*source, query))
-                .is_some_and(|mode| self.check_everything != mode)
-    }
-
-    fn use_search_query(&mut self, source: SourceId, query: &Query) {
-        let mode = self.check_mode(source, query);
-        if let Some(everything) = mode {
-            if self.check_everything != everything {
-                self.check_everything = everything;
-                self.check_generation += 1;
-                self.checks.clear();
+        if !self.everything {
+            self.browse.filters.game_version = None;
+            if self.kind == PackKind::ResourcePack {
+                self.browse.filters.categories.retain(|tag| tag != "modded");
             }
         }
-        if query.offset == 0 {
-            self.modrinth_defaults = (mode.is_some() && !query.everything && query.text.is_empty())
-                .then(|| query.clone());
-        }
-    }
-
-    fn start_search(&mut self, source: SourceId, query: Query) -> (SourceId, Query) {
-        self.search += 1;
-        self.searching = true;
-        self.error = None;
-        self.submitted = Some((source, query.clone()));
-        (source, query)
-    }
-
-    fn begin_search(&mut self, offset: usize, keep: bool, glass: bool) -> (SourceId, Query) {
-        if offset != 0 {
-            if let Some(query) = &self.modrinth_defaults {
-                return self.start_search(
-                    SourceId::Modrinth,
-                    Query {
-                        offset,
-                        ..query.clone()
-                    },
-                );
-            }
-        } else {
-            if !keep {
-                self.results.clear();
-                self.more = false;
-                self.results_list.reset();
-            }
-            self.installed_list.reset();
-        }
-        // In the glass look Show everything is only offered for Modrinth.
-        let everything = self.everything && !(glass && self.source == SourceId::Horizon);
-        // A Java instance's files are Modrinth's, for its version and loader.
-        let (source, query) = match self.java_for(self.kind) {
-            Some(target) => (
-                SourceId::Modrinth,
-                Query {
-                    offset,
-                    limit: PAGE,
-                    ..target.search(self.text.text(), self.kind, &self.browse.filters)
-                },
-            ),
-            None => (
-                self.source,
-                Query {
-                    everything,
-                    offset,
-                    limit: PAGE,
-                    filters: self.browse.filters.clone(),
-                    ..Query::new(self.text.text(), self.kind)
-                },
-            ),
-        };
-        if !keep {
-            self.use_search_query(source, &query);
-        }
-        self.start_search(source, query)
-    }
-
-    fn retry_search(&mut self) -> Option<(SourceId, Query)> {
-        self.error.as_ref()?;
-        let (source, query) = self.submitted.clone()?;
-        Some(self.start_search(source, query))
-    }
-
-    /// Accepts the current page and returns the projects whose jars may need checking.
-    fn finish_search(
-        &mut self,
-        search: u64,
-        offset: usize,
-        result: Result<Vec<Project>, String>,
-    ) -> Vec<Project> {
-        if search != self.search {
-            return Vec::new();
-        }
-        // A kept search changes the displayed scope only when its own answer arrives.
-        if offset == 0 {
-            if let Some((source, query)) = self.submitted.clone() {
-                self.use_search_query(source, &query);
-            }
-        }
-        self.searching = false;
-        self.searched = true;
-        match result {
-            Ok(found) => {
-                self.more = found.len() == PAGE;
-                self.results.truncate(offset);
-                if offset == 0 {
-                    self.results_list.reset();
-                }
-                self.results.extend(found.iter().cloned());
-                self.error = None;
-                found
-            }
-            Err(e) => {
-                if offset == 0 {
-                    self.results.clear();
-                    self.more = false;
-                    self.results_list.reset();
-                }
-                self.error = Some(e);
-                Vec::new()
-            }
-        }
-    }
-
-    fn finish_check(
-        &mut self,
-        generation: u64,
-        key: (SourceId, String),
-        result: Result<(String, Box<Check>), java::ProjectCheckError>,
-    ) -> Option<super::mods_project::Loaded> {
-        if generation != self.check_generation {
-            return None;
-        }
-        let (state, loaded) = match result {
-            Ok((version, check)) => {
-                let loaded =
-                    super::mods_project::Loaded::Checked(key.clone(), version, check.verdict);
-                (Checking::Done(check), Some(loaded))
-            }
-            Err(java::ProjectCheckError::NoEligibleFile(reason)) => {
-                (Checking::Unavailable(reason), None)
-            }
-            Err(java::ProjectCheckError::Failed(error)) => (Checking::Failed(error), None),
-        };
-        self.checks.insert(key, state);
-        // Row visibility can change once a verdict arrives.
-        self.results_list.reset();
-        loaded
+        self.checks.clear();
     }
 
     /// How well a result runs: a Java mod's from its check once it has one. In a Java
     /// instance, a result was searched for its version and loader: installing checks the file.
     pub(super) fn support(&self, p: &Project) -> Support {
+        if !can_install_in(p.kind, p.source, self.java.as_ref()) {
+            return Support::No(
+                tr("This pack cannot be installed in the selected instance.").into(),
+            );
+        }
         if self.java_for(p.kind).is_some() {
             return Support::Works;
         }
@@ -527,14 +505,17 @@ impl Mods {
         if p.kind != PackKind::Mod || p.source == SourceId::Horizon || !metadata.installable() {
             return metadata;
         }
-        match self.check_state(p) {
+        match self.checks.get(&(p.source, p.id.clone())) {
             Some(Checking::Done(c)) => java::support_of(c),
-            Some(Checking::Unavailable(reason)) => Support::No(reason.clone()),
             Some(Checking::Failed(e)) => {
                 Support::Partial(trf("Not checked: {error}", &[("error", e)]))
             }
             _ => Support::Partial(tr("Checking its jar…").into()),
         }
+    }
+
+    pub(super) fn needs_pack_review(&self, p: &Project) -> bool {
+        reviews_resource_pack(p.kind, p.source, self.java.as_ref())
     }
 }
 
@@ -544,123 +525,11 @@ impl Mods {
 fn shown(
     results: &[Project],
     everything: bool,
-    support: impl Fn(&Project) -> Option<Support>,
+    support: impl Fn(&Project) -> Support,
 ) -> Vec<usize> {
     (0..results.len())
-        .filter(|&i| everything || support(&results[i]).is_some_and(|s| s.installable()))
+        .filter(|&i| everything || support(&results[i]).installable())
         .collect()
-}
-
-fn empty_mod_results(
-    m: &Mods,
-    t: &theme::Theme,
-    retry: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
-    more: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
-) -> Div {
-    let waiting = m.waiting_for_modrinth_defaults();
-    let feedback = div().flex().flex_col();
-    if !waiting && m.default_check_error().is_some() {
-        return mod_results_footer(feedback, m, t, retry, more);
-    }
-    let line = if waiting {
-        tr("Searching…").to_string()
-    } else if !m.results.is_empty() {
-        tr("Nothing found that runs in Horizon. Show everything lists the rest.").to_string()
-    } else if m.searching || !m.searched {
-        tr("Searching…").to_string()
-    } else if let Some(target) = m.java_for(m.kind) {
-        trf(
-            "Nothing found for {target}.",
-            &[("target", &target.describe(m.kind))],
-        )
-    } else if t.glass && !m.text.text().trim().is_empty() {
-        trf(
-            "Nothing matches “{query}”.",
-            &[("query", m.text.text().trim())],
-        )
-    } else if m.source == SourceId::Horizon {
-        tr("Nothing in Horizon's registry matches yet.").to_string()
-    } else if m.everything {
-        tr("Nothing found.").to_string()
-    } else {
-        tr("Nothing found that runs in Horizon. Show everything lists the rest.").to_string()
-    };
-    let feedback = feedback.child(mod_results_message(line, t));
-    mod_results_footer(feedback, m, t, retry, more)
-}
-
-fn mod_results_message(line: String, t: &theme::Theme) -> AnyElement {
-    if t.glass {
-        crate::glass_ui::text(14., FontWeight::NORMAL, 0.6)
-            .px(px(16.))
-            .py(px(24.))
-            .child(line)
-            .into_any_element()
-    } else {
-        centered(&line, t).into_any_element()
-    }
-}
-
-fn mod_results_footer(
-    out: Div,
-    m: &Mods,
-    t: &theme::Theme,
-    retry: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
-    more: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
-) -> Div {
-    let out = if let Some(error) = m
-        .default_check_error()
-        .filter(|_| !m.waiting_for_modrinth_defaults())
-    {
-        let line = trf("Not checked: {error}", &[("error", error)]);
-        out.child(
-            div()
-                .flex()
-                .flex_col()
-                .child(mod_results_message(line, t))
-                .child(
-                    div().flex().px(px(8.)).child(
-                        button("mods-check-retry", "Try again", Kind::Secondary, t)
-                            .debug_selector(|| "mods-check-retry".into())
-                            .on_click(retry),
-                    ),
-                ),
-        )
-    } else {
-        out
-    };
-    with_mod_results_more(out, m, t, more)
-}
-
-fn with_mod_results_more(
-    out: Div,
-    m: &Mods,
-    t: &theme::Theme,
-    on_more: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
-) -> Div {
-    if !m.more {
-        return out;
-    }
-    let more = if t.glass {
-        crate::glass_ui::quiet("mods-more", tr("More"), 36., t)
-    } else {
-        button("mods-more", "More", Kind::Ghost, t)
-    };
-    let more = if m.searching || m.waiting_for_modrinth_defaults() {
-        if t.glass {
-            more.opacity(0.5)
-        } else {
-            disabled(more)
-        }
-    } else {
-        more.on_click(on_more)
-    };
-    let row = if t.glass {
-        div().flex().p(px(8.))
-    } else {
-        div().flex().pt(px(16.))
-    };
-    out.child(row.child(more.debug_selector(|| "mods-more".into())))
 }
 
 /// `51404735` → `51.4M`.
@@ -743,20 +612,19 @@ impl Launcher {
             self.pack_open = slug;
             self.mods.report_list.reset();
         }
-        if self.mods.kind != PackKind::Modpack {
-            self.mods.kind = PackKind::Modpack;
-            self.mods.source = source_for(PackKind::Modpack);
-            self.mods.browse.filters = Default::default();
-            self.mods.browse.open = None;
-            if self.mods.loaded {
-                self.mods_search(0);
-            }
+        if self.mods.set_kind(PackKind::Modpack) && self.mods.loaded {
+            self.mods_search(0);
         }
     }
 
     /// Called with the launcher's other work: what the background sent.
-    pub(super) fn mods_tick(&mut self) -> bool {
+    pub(super) fn mods_tick(
+        &mut self,
+        window: gpui::AnyWindowHandle,
+        cx: &mut Context<Self>,
+    ) -> bool {
         let mut changed = false;
+        let mut next_page = None;
         let mut to_check = Vec::new();
         let mut loaded = Vec::new();
         let mut done = false;
@@ -769,9 +637,32 @@ impl Launcher {
                         p.mods = found;
                     }
                 }
-                Event::Found(search, offset, result) => {
-                    to_check.extend(m.finish_search(search, offset, result));
+                Event::Found(search, offset, result) if search == m.search => {
+                    m.searching = false;
+                    m.searched = true;
+                    match result {
+                        Ok(found) => {
+                            m.more = found.len() == PAGE;
+                            m.results.truncate(offset);
+                            if offset == 0 {
+                                m.results_list.reset();
+                            }
+                            m.results.extend(found.iter().cloned());
+                            m.error = None;
+                            next_page = m.next_default_page();
+                            to_check.extend(found);
+                        }
+                        Err(e) => {
+                            if offset == 0 {
+                                m.results.clear();
+                                m.more = false;
+                                m.results_list.reset();
+                            }
+                            m.error = Some(e);
+                        }
+                    }
                 }
+                Event::Found(..) => {}
                 Event::Progress(line, f) => {
                     if let Some(busy) = &mut m.busy {
                         busy.1 = line;
@@ -792,9 +683,49 @@ impl Launcher {
                         self.packs_loaded = None;
                     }
                 }
-                Event::Updates(found) => m.updates = found,
-                Event::Checked(generation, key, result) => {
-                    loaded.extend(m.finish_check(generation, key, result));
+                Event::ConfirmPack {
+                    title,
+                    reason,
+                    action,
+                    reply,
+                } => {
+                    match cx.update_window(window, |_, window, cx| {
+                        window.prompt(
+                            gpui::PromptLevel::Warning,
+                            &title,
+                            Some(&reason),
+                            &[tr("Cancel"), action],
+                            cx,
+                        )
+                    }) {
+                        Ok(answer) => cx
+                            .spawn(async move |_, _| {
+                                let _ = reply.send(matches!(answer.await, Ok(1)));
+                            })
+                            .detach(),
+                        Err(_) => {
+                            let _ = reply.send(false);
+                        }
+                    }
+                }
+                Event::UpdateApplied(home, key) => {
+                    if m.home() == home {
+                        m.updates.remove(&key);
+                    }
+                }
+                Event::Updates(check, found) if check == m.update_check => {
+                    let current = installed::Installed::load(&m.home());
+                    m.updates = current_offers(found, &current);
+                }
+                Event::Updates(..) => {}
+                Event::Checked(key, result) => {
+                    let state = match result {
+                        Ok(c) => Checking::Done(c),
+                        Err(e) => Checking::Failed(e),
+                    };
+                    m.checks.insert(key, state);
+                    // A row may leave the list (`shown`): measure them again (`cull`).
+                    m.results_list.reset();
                 }
                 Event::Loaded(l) => loaded.push(l),
                 Event::About(about) => {
@@ -838,13 +769,10 @@ impl Launcher {
                 }
             }
         }
-        self.mods_check(to_check);
-        if self.page == Page::Mods && self.mods.browse.open.is_none() {
-            if let Some(offset) = self.mods.next_default_offset() {
-                self.mods_search(offset);
-                changed = true;
-            }
+        if let Some(offset) = next_page {
+            self.fetch_mods_page(offset);
         }
+        self.mods_check(to_check);
         if done {
             // A data pack put into a world shows in its list on Home.
             self.world_packs.reread();
@@ -862,24 +790,32 @@ impl Launcher {
     /// Searches; with `keep`, the rows already listed stay on screen until the new ones arrive,
     /// so the page doesn't shrink (and the scroll doesn't jump to the top) while it waits.
     pub(super) fn mods_search_keeping(&mut self, offset: usize, keep: bool) {
-        let (source, query) = self.mods.begin_search(offset, keep, self.theme.glass);
-        self.spawn_mods_search(source, query);
+        if offset == 0 {
+            let query = self.mods.new_query();
+            if !keep {
+                self.mods.results.clear();
+                self.mods.more = false;
+                self.mods.results_list.reset();
+            }
+            self.mods.installed_list.reset();
+            self.mods.submitted = Some(query);
+        }
+        self.fetch_mods_page(offset);
     }
 
-    fn mods_search_retry_button(&self, cx: &mut Context<Self>) -> Stateful<Div> {
-        search_retry_button(
-            &self.theme,
-            cx.listener(|this, _: &ClickEvent, _, cx| {
-                if let Some((source, query)) = this.mods.retry_search() {
-                    this.spawn_mods_search(source, query);
-                    cx.notify();
-                }
-            }),
-        )
+    fn retry_mods_page(&mut self) {
+        if let Some(query) = &self.mods.submitted {
+            self.fetch_mods_page(query.offset);
+        }
     }
 
-    fn spawn_mods_search(&self, source: SourceId, query: Query) {
-        let (tx, search) = (self.mods.tx.clone(), self.mods.search);
+    fn fetch_mods_page(&mut self, offset: usize) {
+        let m = &mut self.mods;
+        let source = m.source();
+        let Some(query) = m.begin_page(offset) else {
+            return;
+        };
+        let (tx, search) = (m.tx.clone(), m.search);
         std::thread::spawn(move || {
             let result = browser::source(source)
                 .ok_or_else(|| trf("{source} isn't set up.", &[("source", source.label())]))
@@ -897,7 +833,7 @@ impl Launcher {
                 }
                 _ => HashMap::new(),
             };
-            let _ = tx.send(Event::Found(search, query.offset, result));
+            let _ = tx.send(Event::Found(search, offset, result));
             if !about.is_empty() {
                 let _ = tx.send(Event::About(about));
             }
@@ -1015,7 +951,8 @@ impl Launcher {
         for p in &todo {
             m.checks.insert((p.source, p.id.clone()), Checking::Running);
         }
-        let (everything, generation) = (m.check_everything, m.check_generation);
+        // A version other than 26.3 asked for: check the newest file for 1.21 and later.
+        let everything = m.everything || m.browse.filters.other_version();
         let tx = m.tx.clone();
         let queue = std::sync::Mutex::new(todo.into_iter());
         std::thread::spawn(move || {
@@ -1027,23 +964,23 @@ impl Launcher {
                         while let Some(p) = queue.lock().ok().and_then(|mut q| q.next()) {
                             let result = browser::source(p.source)
                                 .ok_or_else(|| {
-                                    java::ProjectCheckError::Failed(trf(
-                                        "{source} isn't set up.",
-                                        &[("source", p.source.label())],
-                                    ))
+                                    trf("{source} isn't set up.", &[("source", p.source.label())])
                                 })
                                 .and_then(|source| {
-                                    java::check_project_outcome(
-                                        &home,
-                                        &*source,
-                                        &p,
-                                        everything,
-                                        &|_| {},
-                                    )
+                                    java::check_project(&home, &*source, &p, everything, &|_| {})
                                 });
-                            let result =
-                                result.map(|(version, check)| (version.id, Box::new(check)));
-                            let _ = tx.send(Event::Checked(generation, (p.source, p.id), result));
+                            // The project's page, if open, shows the verdict beside its version.
+                            if let Ok((version, check)) = &result {
+                                let key = (p.source, p.id.clone());
+                                let _ =
+                                    tx.send(Event::Loaded(super::mods_project::Loaded::Checked(
+                                        key,
+                                        version.id.clone(),
+                                        check.verdict,
+                                    )));
+                            }
+                            let result = result.map(|(_, check)| Box::new(check));
+                            let _ = tx.send(Event::Checked((p.source, p.id), result));
                         }
                     });
                 }
@@ -1054,6 +991,8 @@ impl Launcher {
     /// Looks for newer versions of what the browser installed.
     fn mods_check_updates(&mut self) {
         let entries = self.mods.installed.clone();
+        self.mods.update_check += 1;
+        let check = self.mods.update_check;
         if entries.is_empty() {
             return;
         }
@@ -1076,58 +1015,111 @@ impl Launcher {
                     None => installed::update_for(&*source, &e),
                 };
                 if let Ok(Some(v)) = newer {
-                    found.insert((e.source, e.project.clone()), v.number);
+                    found.insert(
+                        (e.source, e.project),
+                        UpdateOffer {
+                            installed_version: e.version,
+                            number: v.number,
+                        },
+                    );
                 }
             }
-            let _ = tx.send(Event::Updates(found));
+            let _ = tx.send(Event::Updates(check, found));
         });
     }
 
     /// What Update all updates and what its button counts: each installed pack a newer version
     /// was found for, but not a Horizon mod whose file is gone now (its row offers Remove).
-    pub(super) fn mods_updatable(&self) -> Vec<(SourceId, String, String)> {
+    pub(super) fn mods_updatable(&self) -> Vec<&installed::Entry> {
         let home = self.mods.home();
-        let mut todo: Vec<(SourceId, String, String)> = (self.mods.installed.iter())
+        let mut todo: Vec<_> = self
+            .mods
+            .installed
+            .iter()
             .filter(|e| {
                 self.mods
                     .updates
                     .contains_key(&(e.source, e.project.clone()))
             })
             .filter(|e| self.mods.java.is_some() || !installed::file_missing(&home, e))
-            .map(|e| (e.source, e.project.clone(), e.title.clone()))
             .collect();
-        todo.dedup_by(|a, b| a.0 == b.0 && a.1 == b.1);
+        todo.dedup_by(|a, b| a.source == b.source && a.project == b.project);
         todo
     }
 
     /// Updates every installed pack a newer version was found for, one after the other on a
     /// thread, each checked as an install is. One failing doesn't stop the others.
     pub(super) fn mods_update_all(&mut self) {
-        let todo = self.mods_updatable();
+        self.mods_load();
+        let todo = self.mods_updatable().into_iter().cloned().collect();
+        self.mods_update_entries(todo);
+    }
+
+    fn mods_update_entries(&mut self, todo: Vec<installed::Entry>) {
         if self.mods.busy.is_some() || todo.is_empty() {
             return;
         }
         self.mods.message = None;
-        self.mods.busy = Some(("all".into(), "Updating…".into(), 0.));
-        self.mods.updates.clear();
+        self.mods.busy = Some(("all".into(), tr("Updating…").into(), 0.));
         let tx = self.mods.tx.clone();
         let home = self.mods.home();
         let java = self.mods.java.clone();
+        let instance = self
+            .selected_instance()
+            .map_or_else(|| tr("Horizon").to_owned(), |i| i.name.clone());
         std::thread::spawn(move || {
             let count = todo.len();
             let (mut done, mut failed) = (Vec::new(), Vec::new());
-            for (i, (source_id, id, title)) in todo.into_iter().enumerate() {
+            for (i, entry) in todo.into_iter().enumerate() {
                 let step = |line: &str, f: f32| {
                     let overall = (i as f32 + f) / count as f32;
                     let _ = tx.send(Event::Progress(
-                        format!("{} of {count}: {line}", i + 1),
+                        trf(
+                            "{current} of {count}: {line}",
+                            &[
+                                ("current", &(i + 1).to_string()),
+                                ("count", &count.to_string()),
+                                ("line", line),
+                            ],
+                        ),
                         overall,
                     ));
                 };
-                let updated = browser::source(source_id)
-                    .ok_or_else(|| trf("{source} isn't set up.", &[("source", source_id.label())]))
+                let updated = browser::source(entry.source)
+                    .ok_or_else(|| {
+                        trf(
+                            "{source} isn't set up.",
+                            &[("source", entry.source.label())],
+                        )
+                    })
                     .and_then(|source| {
-                        let p = source.project(&id)?;
+                        if reviews_resource_pack(entry.kind, entry.source, java.as_ref()) {
+                            return installed::update_modrinth_resource_pack(
+                                &*source,
+                                &entry,
+                                &home,
+                                &|version, reason| {
+                                    let title = trf(
+                                        "Update {pack} to {version} in {instance}?",
+                                        &[
+                                            ("pack", &entry.title),
+                                            ("version", &version.number),
+                                            ("instance", &instance),
+                                        ],
+                                    );
+                                    confirm_pack(&tx, title, reason, tr("Update"))
+                                },
+                                &step,
+                            );
+                        }
+                        let p = source.project(&entry.project)?;
+                        if p.kind != entry.kind || !can_install_in(p.kind, p.source, java.as_ref())
+                        {
+                            return Err(tr(
+                                "This pack cannot be installed in the selected instance.",
+                            )
+                            .into());
+                        }
                         match &java {
                             Some(target) => {
                                 java_instance::install(&*source, target, &p, &home, &step)
@@ -1136,46 +1128,116 @@ impl Launcher {
                         }
                     });
                 match updated {
-                    Ok(entries) => done.extend(
-                        entries
-                            .into_iter()
-                            .filter(|e| e.project == id)
-                            .map(|e| format!("{} {}", e.title, e.number)),
-                    ),
-                    Err(e) => failed.push(format!("{title}: {e}")),
+                    Ok(entries) => {
+                        done.extend(
+                            entries
+                                .into_iter()
+                                .filter(|e| e.project == entry.project)
+                                .map(|e| format!("{} {}", e.title, e.number)),
+                        );
+                        let _ = tx.send(Event::UpdateApplied(
+                            home.clone(),
+                            (entry.source, entry.project),
+                        ));
+                    }
+                    Err(e) => failed.push(trf(
+                        "{pack}: {reason}",
+                        &[("pack", &entry.title), ("reason", &e)],
+                    )),
                 }
             }
             let updated = match done.is_empty() {
                 true => String::new(),
-                false => format!("Updated {}, checksums checked.", done.join(", ")),
+                false => trf(
+                    "Updated {packs}, checksums checked.",
+                    &[("packs", &done.join(", "))],
+                ),
             };
             let result = match failed.is_empty() {
+                true if updated.is_empty() => Ok(tr("Already up to date.").into()),
                 true => Ok(updated),
-                false => Err(format!("{updated} Not updated: {}", failed.join("; "))
-                    .trim()
-                    .to_string()),
+                false => Err(format!(
+                    "{updated}\n{}",
+                    trf("Not updated: {packs}", &[("packs", &failed.join("\n"))])
+                )
+                .trim()
+                .to_string()),
             };
             let _ = tx.send(Event::Done(result, false));
         });
     }
 
     /// Installs (or updates) a project on a thread: a pack into its folder, a modpack into
-    /// Modpacks. `known` is the project when the page has it; else it is asked for first.
-    pub(super) fn mods_install(&mut self, source: SourceId, id: String, known: Option<Project>) {
+    /// Modpacks.
+    pub(super) fn mods_install(&mut self, request: InstallRequest) {
         if self.mods.busy.is_some() {
             return;
+        }
+        self.mods_load();
+        let Some(kind) = self.mods.install_kind(&request) else {
+            return;
+        };
+        let (source, id) = request.item();
+        if !can_install_in(kind, source, self.mods.java.as_ref()) {
+            self.mods.message = Some(Err(tr(
+                "This pack cannot be installed in the selected instance.",
+            )
+            .into()));
+            return;
+        }
+        if matches!(request, InstallRequest::Installed(..))
+            && reviews_resource_pack(kind, source, self.mods.java.as_ref())
+        {
+            if let Some(entry) = self
+                .mods
+                .installed
+                .iter()
+                .find(|e| e.source == source && e.project == id)
+            {
+                self.mods_update_entries(vec![entry.clone()]);
+            }
+            return;
+        }
+        let pack = match &request {
+            InstallRequest::Browse(p) if self.mods.needs_pack_review(p) => Some(p.as_ref()),
+            _ => None,
+        };
+        let mut reviewed_pack = None;
+        if let Some(p) = pack {
+            let open = self
+                .mods
+                .browse
+                .open
+                .as_ref()
+                .filter(|o| o.project.source == p.source && o.project.id == p.id);
+            match open.and_then(|o| o.pack_review.as_ref()) {
+                Some(Ok(review)) if review.support.installable() => {
+                    reviewed_pack = Some(review.clone());
+                }
+                _ => {
+                    if open.is_none() {
+                        self.mods_open(p.clone());
+                    }
+                    return;
+                }
+            }
         }
         // The first native mod: the trust notice, before anything is installed.
         let first_native = source == SourceId::Horizon
             && self.settings.native_mods_allowed_at.is_none()
-            && horizon::is_native_mod(&id);
+            && horizon::is_native_mod(id);
         if first_native {
-            self.pending_consent = Some(PendingConsent::Install(source, id, known));
+            self.pending_consent = Some(PendingConsent::Install(request));
             self.content_scroll
                 .handle
                 .set_offset(gpui::point(px(0.), px(0.)));
             return;
         }
+        let id = id.to_owned();
+        let known = match request {
+            InstallRequest::Browse(p) | InstallRequest::Palette(p) => Some(*p),
+            InstallRequest::Installed(..) => None,
+        };
         self.mods.message = None;
         self.mods.busy = Some((id.clone(), format!("Asking {}…", source.label()), 0.));
         self.mods.updates.remove(&(source, id.clone()));
@@ -1211,6 +1273,11 @@ impl Launcher {
                         Some(p) => p,
                         None => source.project(&id)?,
                     };
+                    if p.kind != kind || !can_install_in(p.kind, p.source, java.as_ref()) {
+                        return Err(
+                            tr("This pack cannot be installed in the selected instance.").into(),
+                        );
+                    }
                     if let Some(target) = java.as_ref().filter(|t| t.takes(p.kind)) {
                         let done = java_instance::install(&*source, target, &p, &home, &progress)?;
                         let names: Vec<String> = done
@@ -1279,7 +1346,27 @@ impl Launcher {
                             tr("Play it from the list above.")
                         ));
                     }
-                    let done = installed::install(&*source, &p, everything, &home, &progress)?;
+                    let done = match reviewed_pack {
+                        Some(review) => {
+                            if !review.confirm_optional_mods(|version, reason| {
+                                let title = trf(
+                                    "Install {pack} {version} in {instance}?",
+                                    &[
+                                        ("pack", &p.title),
+                                        ("version", &version.number),
+                                        ("instance", &instance),
+                                    ],
+                                );
+                                confirm_pack(&tx, title, reason, tr("Install"))
+                            }) {
+                                return Err(tr("Installation canceled.").into());
+                            }
+                            installed::install_reviewed_resource_pack(
+                                &*source, review, &home, &progress,
+                            )
+                        }
+                        None => installed::install(&*source, &p, everything, &home, &progress),
+                    }?;
                     let names: Vec<String> = done
                         .iter()
                         .map(|e| format!("{} {}", e.title, e.number))
@@ -1314,11 +1401,7 @@ impl Launcher {
                             ported
                         });
                     }
-                    Ok(trf(
-                        "Installed {mods}, checksums checked. Turn it on in the game: Options \
-                         > Resource Packs.",
-                        &[("mods", &mods)],
-                    ))
+                    Ok(pack_install_notice(p.kind, p.source, &mods))
                 });
             let _ = tx.send(Event::Done(result, modpack));
         });
@@ -1339,7 +1422,7 @@ impl Launcher {
             .flex()
             .items_center()
             .gap(px(10.))
-            .w(px(320.))
+            .when(!t.glass, |d| d.w(px(320.)))
             .h(px(theme::FIELD + 4.))
             .px(px(12.))
             .overflow_hidden()
@@ -1367,8 +1450,15 @@ impl Launcher {
                 cx.notify();
             }))
             .on_key_down(cx.listener(|this, ev: &KeyDownEvent, window, cx| {
+                let had_text = !this.mods.text.text().trim().is_empty();
                 match line_edit::handle(&mut this.mods.text, ev, cx) {
                     Key::Enter => this.mods_search(0),
+                    _ if had_text
+                        && this.mods.text.text().trim().is_empty()
+                        && this.mods.source() == SourceId::Modrinth =>
+                    {
+                        this.mods_search(0)
+                    }
                     Key::Escape => window.blur(cx),
                     Key::Pass => return,
                     _ => {}
@@ -1378,13 +1468,17 @@ impl Launcher {
             }));
         // The glass look's: `rounded-[12px] h-11 bg-white/[0.07] px-3.5`, a 17 px search icon.
         let field = if t.glass {
+            use horizon_theme::glass::{fill, radius};
             field
-                .w_full()
                 .h(px(44.))
                 .px(px(14.))
                 .border_0()
-                .rounded(px(12.))
-                .bg(crate::glass_ui::white(if focused { 0.11 } else { 0.07 }))
+                .rounded(px(radius::ROW))
+                .bg(crate::glass_ui::white(if focused {
+                    fill::FIELD_FOCUS
+                } else {
+                    fill::FIELD
+                }))
                 .font_family(horizon_theme::glass::FONT)
                 .text_size(px(14.))
         } else {
@@ -1397,30 +1491,28 @@ impl Launcher {
     /// for updates: the Mods page and Home's Mods tab (`instance_mods.rs`) show it. Packs and mods
     /// go into the selected instance: picking another reads its list.
     pub(super) fn mods_load(&mut self) {
-        let home = self.selected_instance().map(|i| i.home.clone());
-        let java = self
-            .selected_instance()
-            .and_then(|i| i.java.as_ref())
-            .map(|j| j.target());
-        // Another version or loader: other results, on the page's next draw.
-        if java != self.mods.java {
-            self.mods.asked = false;
-        }
-        self.mods.java = java;
+        let instance = self.selected_instance();
+        let id = instance.map(|i| i.id.clone());
+        let home = instance.map(|i| i.home.clone());
+        let java = instance.and_then(|i| i.java.as_ref()).map(|j| j.target());
+        let target_changed = self.mods.set_target(id, home, java);
         // The instance moved to another Horizon (picked, or an update it follows): the versions
         // that fit change, so look for updates again.
         let plays = self
             .selected_instance()
             .and_then(|i| i.version.clone())
             .or_else(|| self.installed.first().cloned());
-        if self.mods.loaded && self.mods.java.is_none() && plays != self.mods.checked_for {
+        if self.mods.loaded
+            && !target_changed
+            && self.mods.java.is_none()
+            && plays != self.mods.checked_for
+        {
             self.mods.checked_for = plays.clone();
             self.mods.updates.clear();
             self.mods_check_updates();
         }
-        if !self.mods.loaded || (home.is_some() && self.mods.home != home) {
+        if !self.mods.loaded || target_changed {
             self.mods.checked_for = plays;
-            self.mods.home = home;
             self.mods.reload_installed();
             self.mods.installed_list.reset();
             self.mods.updates.clear();
@@ -1434,19 +1526,57 @@ impl Launcher {
 
     /// Opens a kind's tab: its first source, its own filters, a new search.
     pub(super) fn mods_set_kind(&mut self, kind: PackKind) {
-        if self.mods.kind != kind {
-            self.mods.kind = kind;
-            self.mods.source = source_for(kind);
-            // A data pack goes into a world: one may have been made since.
-            if kind == PackKind::DataPack {
-                self.mods.read_worlds();
-            }
-            // Categories and loaders differ by kind.
-            self.mods.browse.filters = Default::default();
-            self.mods.browse.open = None;
-            self.mods.picked = None;
+        if self.mods.set_kind(kind) {
             self.mods_search(0);
         }
+    }
+
+    /// The source control is shared by the Glass and Blocks layouts.
+    pub(super) fn mods_source_switch(&self, cx: &mut Context<Self>) -> Option<Stateful<Div>> {
+        switches(self.mods.kind, self.mods.java.is_some()).then(|| {
+            let this = cx.entity().downgrade();
+            segments(
+                "mods-sources",
+                &SOURCES,
+                self.mods.source(),
+                &self.theme,
+                move |source, _, cx| {
+                    let _ = this.update(cx, |this, cx| {
+                        if this.mods.source != source {
+                            this.mods.source = source;
+                            this.mods.reset_browse_context();
+                            this.mods_search(0);
+                            cx.notify();
+                        }
+                    });
+                },
+            )
+        })
+    }
+
+    fn mods_everything_toggle(&self, cx: &mut Context<Self>) -> Stateful<Div> {
+        let t = self.theme;
+        let label = if t.glass {
+            crate::glass_ui::text(13., FontWeight::NORMAL, 0.7)
+        } else {
+            text(theme::LABEL).text_color(t.ink_soft)
+        };
+        keyboard(div().id("mods-everything"), &t)
+            .flex()
+            .items_center()
+            .gap(px(if t.glass { 10. } else { 8. }))
+            .cursor_pointer()
+            .child(widgets::switch_face(
+                "mods-everything-switch",
+                self.mods.everything,
+                &t,
+            ))
+            .child(label.child(tr("Show everything")))
+            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                this.mods.toggle_everything();
+                this.mods_search(0);
+                cx.notify();
+            }))
     }
 
     /// Remove, then Remove for good: an installed project leaves the instance on the second
@@ -1513,7 +1643,6 @@ impl Launcher {
         let t = self.theme;
         self.mods_load();
         if !self.mods.asked {
-            self.mods.asked = true;
             self.mods_search(0);
         }
         if t.glass {
@@ -1521,9 +1650,7 @@ impl Launcher {
         }
         let header = page_header(
             "Mods",
-            "Mods and shader packs made for Horizon from its own reviewed registry, and \
-             resource packs from Modrinth. Each file is checked against its source's checksum \
-             before it reaches your game folder.",
+            tr("Browse the Horizon Registry and find resource, shader and data packs on Modrinth."),
             &t,
         );
         let this = cx.entity().downgrade();
@@ -1537,33 +1664,9 @@ impl Launcher {
                 });
             }
         });
-        let everything = self.mods.everything;
-        let toggle = div()
-            .id("mods-everything")
-            .flex()
-            .items_center()
-            .gap(px(8.))
-            .cursor_pointer()
-            .child(switch("mods-everything-switch", everything, &t))
-            .child(
-                text(theme::LABEL)
-                    .text_color(t.ink_soft)
-                    .child(tr("Show everything")),
-            )
-            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                this.mods.toggle_everything();
-                this.mods_search(0);
-                cx.notify();
-            }));
-        // The kinds both sources serve pick theirs: CurseForge is coming soon there, shown,
-        // inert, never searched (like the Microsoft account's "Coming soon").
-        // A Java instance's files come from Modrinth, for its version.
-        let java = self.mods.java_for(self.mods.kind).is_some();
-        let source_note = (switches(self.mods.kind) && !java)
-            .then(|| div().flex().child(self.mods_source_switch(cx)));
         // The registry lists only what was made for Horizon: no "everything", and of the filters
         // only its categories.
-        let registry = self.mods.source == SourceId::Horizon && !java;
+        let registry = self.mods.source() == SourceId::Horizon;
         let filters = self.mods_filters(cx);
         // The registry's sort sits below the GitHub row, above the list it orders.
         let registry_sort = registry.then(|| self.mods_sort_bar(cx));
@@ -1578,9 +1681,14 @@ impl Launcher {
                     .items_center()
                     .gap(px(12.))
                     .child(self.mods_field(cx))
-                    .when(!registry && !java, |d| d.child(toggle)),
+                    .when(self.mods.can_show_everything(), |d| {
+                        d.child(self.mods_everything_toggle(cx))
+                    }),
             )
-            .children(source_note)
+            .children(
+                self.mods_source_switch(cx)
+                    .map(|switch| div().flex().child(switch)),
+            )
             .child(filters)
             .children(self.mods_target_line(cx));
         // The kinds are inventory tabs on the panel that holds the open one.
@@ -1821,7 +1929,7 @@ impl Launcher {
                 } else {
                     let (source, id) = key.clone();
                     update = update.on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                        this.mods_install(source, id.clone(), None);
+                        this.mods_install(InstallRequest::Installed(source, id.clone()));
                         cx.notify();
                     }));
                 }
@@ -1845,7 +1953,10 @@ impl Launcher {
                     let id = e.project.clone();
                     recommended =
                         recommended.on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                            this.mods_install(SourceId::Horizon, id.clone(), None);
+                            this.mods_install(InstallRequest::Installed(
+                                SourceId::Horizon,
+                                id.clone(),
+                            ));
                             cx.notify();
                         }));
                 }
@@ -2040,20 +2151,48 @@ impl Launcher {
         )
     }
 
+    fn mods_retry_button(&self, cx: &mut Context<Self>) -> Stateful<Div> {
+        button("mods-retry", "Try again", Kind::Secondary, &self.theme).on_click(cx.listener(
+            |this, _: &ClickEvent, _, cx| {
+                this.retry_mods_page();
+                cx.notify();
+            },
+        ))
+    }
+
     fn mods_results(&mut self, cx: &mut Context<Self>) -> Div {
         let t = self.theme;
         let m = &self.mods;
         if let Some(e) = &m.error {
             return div()
-                .flex()
-                .flex_col()
-                .gap(px(8.))
                 .child(notice(e.clone(), &t))
-                .child(div().flex().child(self.mods_search_retry_button(cx)));
+                .child(self.mods_retry_button(cx));
         }
         let shown = m.shown();
         if shown.is_empty() {
-            return self.mods_empty_results(cx);
+            let line = if m.kind == PackKind::Shader && m.java.is_some() {
+                tr("Shader packs for Java instances aren't supported yet.")
+            } else if m.searching || !m.searched {
+                tr("Searching…")
+            } else if !m.results.is_empty() {
+                tr("Nothing found that runs in Horizon. Show everything lists the rest.")
+            } else if let Some(target) = m.java_for(m.kind) {
+                return centered(
+                    &trf(
+                        "Nothing found for {target}.",
+                        &[("target", &target.describe(m.kind))],
+                    ),
+                    &t,
+                );
+            } else if m.source() == SourceId::Horizon {
+                tr("Nothing in Horizon's registry matches yet.")
+            } else if m.everything || !m.can_show_everything() {
+                tr("Nothing found.")
+            } else {
+                tr("Nothing found that runs in Horizon. Show everything lists the rest.")
+            };
+            let out = div().flex().flex_col().child(centered(line, &t));
+            return self.mods_more(out, cx);
         }
         let result_count = shown.len();
         let rows = m.results_list.clone();
@@ -2111,7 +2250,7 @@ impl Launcher {
                 } else {
                     let p = p.clone();
                     install = install.on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                        this.mods_install(p.source, p.id.clone(), Some(p.clone()));
+                        this.mods_install(InstallRequest::Browse(Box::new(p.clone())));
                         cx.notify();
                     }));
                 }
@@ -2174,39 +2313,39 @@ impl Launcher {
         self.mods_more(div().flex().flex_col().child(list), cx)
     }
 
-    fn mods_empty_results(&self, cx: &mut Context<Self>) -> Div {
-        let retry = cx.listener(Self::retry_mod_checks);
-        let more = cx.listener(Self::request_more_mods);
-        empty_mod_results(&self.mods, &self.theme, retry, more)
-    }
-
-    fn request_more_mods(&mut self, _: &ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
-        if self.mods.more && !self.mods.searching && !self.mods.waiting_for_modrinth_defaults() {
-            self.mods_search(self.mods.results.len());
-            cx.notify();
+    /// The list's More, under `out` while the source has more pages.
+    fn mods_more(&self, mut out: Div, cx: &mut Context<Self>) -> Div {
+        let t = self.theme;
+        let m = &self.mods;
+        if m.more {
+            let mut more = button("mods-more", "More", Kind::Ghost, &t);
+            if m.searching {
+                more = disabled(more);
+            } else {
+                let offset = m.results.len();
+                more = more.on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                    this.mods_search(offset);
+                    cx.notify();
+                }));
+            }
+            out = out.child(div().flex().pt(px(16.)).child(more));
         }
-    }
-
-    fn mods_more(&self, out: Div, cx: &mut Context<Self>) -> Div {
-        let retry = cx.listener(Self::retry_mod_checks);
-        let more = cx.listener(Self::request_more_mods);
-        mod_results_footer(out, &self.mods, &self.theme, retry, more)
-    }
-
-    fn retry_mod_checks(&mut self, _: &ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
-        let failed = self.mods.retry_default_checks();
-        self.mods_check(failed);
-        cx.notify();
+        out
     }
 }
 
-fn search_retry_button(
-    t: &theme::Theme,
-    retry: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
-) -> Stateful<Div> {
-    button("mods-retry", "Try again", Kind::Secondary, t)
-        .debug_selector(|| "mods-retry".into())
-        .on_click(retry)
+fn pack_install_notice(kind: PackKind, source: SourceId, mods: &str) -> String {
+    if kind == PackKind::Shader && source == SourceId::Modrinth {
+        trf(
+            "Installed {mods}, checksums checked. Turn it on in the game under Options > Video Settings > Shaders > Shader Packs.",
+            &[("mods", mods)],
+        )
+    } else {
+        trf(
+            "Installed {mods}, checksums checked. Turn it on in the game: Options > Resource Packs.",
+            &[("mods", mods)],
+        )
+    }
 }
 
 /// An instance whose registry projects may update.
@@ -2240,512 +2379,350 @@ pub(super) fn auto_update(
     lines
 }
 
-/// Where a kind's tab searches first: Horizon's registry for mods and shader packs, Modrinth for
-/// the rest.
 fn source_for(kind: PackKind) -> SourceId {
     match kind {
-        PackKind::Mod | PackKind::Shader => SourceId::Horizon,
-        PackKind::ResourcePack | PackKind::Modpack | PackKind::DataPack => SourceId::Modrinth,
+        PackKind::ResourcePack | PackKind::DataPack => SourceId::Modrinth,
+        PackKind::Mod | PackKind::Modpack | PackKind::Shader => SourceId::Horizon,
     }
 }
 
-/// Whether a kind's tab picks its source: mods, modpacks, resource packs and data packs are on
-/// both Horizon's registry and Modrinth; Horizon's shader packs are on its registry only.
-pub(super) fn switches(kind: PackKind) -> bool {
-    kind != PackKind::Shader
+fn switches(kind: PackKind, java: bool) -> bool {
+    !java
+        && matches!(
+            kind,
+            PackKind::ResourcePack | PackKind::Shader | PackKind::DataPack
+        )
 }
 
-impl Launcher {
-    /// The source switch: Modrinth or Horizon's registry, CurseForge shown as coming soon and not
-    /// clickable, like the Microsoft account's "Coming soon".
-    fn mods_source_switch(&self, cx: &mut Context<Self>) -> Stateful<Div> {
-        let this = cx.entity().downgrade();
-        source_switch(&self.theme, self.mods.source, move |source, _, cx| {
-            let _ = this.update(cx, |this, cx| {
-                if this.mods.source != source {
-                    this.mods.source = source;
-                    this.mods.browse.filters = Default::default();
-                    this.mods.browse.open = None;
-                    this.mods_search(0);
-                }
-                cx.notify();
-            });
-        })
+fn browse_source(kind: PackKind, picked: SourceId, java: Option<&Target>) -> SourceId {
+    match java {
+        Some(target) if target.takes(kind) => SourceId::Modrinth,
+        Some(_) => SourceId::Horizon,
+        None if switches(kind, false) => picked,
+        None => source_for(kind),
     }
 }
 
-fn source_switch(
-    t: &Theme,
-    current: SourceId,
-    on_pick: impl Fn(SourceId, &mut Window, &mut App) + Clone + 'static,
-) -> Stateful<Div> {
-    let soon = div()
-        .flex()
-        .items_center()
-        .h(px(theme::SEGMENT))
-        .px(px(14.))
-        .pb(px(2.))
-        .opacity(theme::DISABLED)
-        .child(
-            blocks::pixel(14., FontWeight::MEDIUM)
-                .text_color(t.muted)
-                .child(tr("CurseForge (coming soon)")),
-        );
-    segments("mods-source", &SOURCES, current, t, on_pick).child(soon)
+fn can_install_in(kind: PackKind, source: SourceId, java: Option<&Target>) -> bool {
+    match (java, kind) {
+        (Some(_), PackKind::Shader) => false,
+        (Some(_), PackKind::Mod | PackKind::ResourcePack) => source != SourceId::Horizon,
+        (Some(_), PackKind::Modpack | PackKind::DataPack) => source == SourceId::Horizon,
+        (None, _) => true,
+    }
+}
+
+fn reviews_resource_pack(kind: PackKind, source: SourceId, java: Option<&Target>) -> bool {
+    java.is_none() && kind == PackKind::ResourcePack && source == SourceId::Modrinth
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(debug_assertions)]
-    use horizon_port_pack::check::Verdict;
 
-    fn modrinth_mod(id: &str) -> Project {
+    #[test]
+    fn stale_discovery_keeps_only_offers_for_the_still_installed_versions() {
+        let entries = ["updated", "unchanged"].map(|id| serde_json::json!({
+                "source": "modrinth", "kind": "resource-pack", "project": id, "slug": id,
+                "title": id, "version": if id == "updated" { "v2" } else { "v1" },
+                "number": "1", "file": format!("resourcepacks/{id}.zip"), "checksum": "", "page": ""
+        }));
+        let installed: installed::Installed =
+            serde_json::from_value(serde_json::json!({ "entries": entries })).unwrap();
+        let found = ["updated", "unchanged", "removed"]
+            .into_iter()
+            .map(|id| {
+                (
+                    (SourceId::Modrinth, id.into()),
+                    UpdateOffer {
+                        installed_version: "v1".into(),
+                        number: "2".into(),
+                    },
+                )
+            })
+            .collect();
+        assert_eq!(
+            current_offers(found, &installed),
+            HashMap::from([((SourceId::Modrinth, "unchanged".into()), "2".into())])
+        );
+    }
+
+    #[test]
+    fn modrinth_shader_install_names_the_shader_packs_menu() {
+        let shader = pack_install_notice(PackKind::Shader, SourceId::Modrinth, "Example");
+        assert!(shader.contains("Options > Video Settings > Shaders > Shader Packs"));
+        let resource = pack_install_notice(PackKind::ResourcePack, SourceId::Modrinth, "Example");
+        assert!(resource.contains("Options > Resource Packs"));
+    }
+
+    fn project(kind: PackKind, source: SourceId) -> Project {
         Project {
-            source: SourceId::Modrinth,
-            id: id.into(),
-            slug: id.into(),
-            title: id.into(),
+            source,
+            id: "example".into(),
+            slug: "example".into(),
+            title: "Example".into(),
             summary: String::new(),
             author: String::new(),
             downloads: 0,
             page: String::new(),
             icon: None,
             license: String::new(),
-            kind: PackKind::Mod,
-            game_versions: vec![browser::GAME.into()],
-            loaders: vec!["fabric".into()],
+            kind,
+            game_versions: Vec::new(),
+            loaders: Vec::new(),
             blocked: None,
         }
     }
 
-    #[cfg(debug_assertions)]
-    fn modrinth_tab(cx: &mut App) -> Mods {
-        let mut mods = Mods::new(cx);
-        mods.source = SourceId::Modrinth;
-        mods.kind = PackKind::Mod;
-        mods
-    }
-
-    #[cfg(debug_assertions)]
-    fn verdict(project: &Project, verdict: Verdict) -> (String, Box<Check>) {
-        (
-            "test-version".into(),
-            Box::new(Check {
-                mod_id: project.id.clone(),
-                name: project.title.clone(),
-                version: "1".into(),
-                loader: "fabric".into(),
-                license: "MIT".into(),
-                verdict,
-                summary: "Test verdict".into(),
-                ports: Vec::new(),
-                skipped: Vec::new(),
-                depends: Vec::new(),
-                namespaces: vec![project.id.clone()],
-                code: Default::default(),
-            }),
-        )
-    }
-
-    #[cfg(debug_assertions)]
-    fn complete_check(mods: &mut Mods, project: &Project, status: Verdict) {
-        let key = (project.source, project.id.clone());
-        mods.finish_check(mods.check_generation, key, Ok(verdict(project, status)));
-    }
-
-    #[cfg(debug_assertions)]
-    fn search_page(offset: usize) -> Vec<Project> {
-        (offset..offset + PAGE)
-            .map(|i| modrinth_mod(&format!("test-mod-{i}")))
-            .collect()
-    }
-
-    #[cfg(debug_assertions)]
     #[gpui::test]
-    async fn empty_compatible_modrinth_search_holds_unchecked_rows(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| {
-            let mut mods = modrinth_tab(cx);
-            mods.browse.filters.categories.push("worldgen".into());
-            let (_, first_query) = mods.begin_search(0, false, false);
-            assert!(mods.waiting_for_modrinth_defaults());
-            let first_page = mods.finish_search(mods.search, 0, Ok(search_page(0)));
-            assert!(mods.shown().is_empty(), "unchecked mods should stay hidden");
-            assert!(mods.waiting_for_modrinth_defaults());
-            assert_eq!(mods.next_default_offset(), None);
-            let failed = &first_page[0];
-            let key = (failed.source, failed.id.clone());
-            mods.finish_check(
-                mods.check_generation,
-                key,
-                Err(java::ProjectCheckError::Failed("network timeout".into())),
-            );
-            let unavailable = &first_page[1];
-            mods.finish_check(
-                mods.check_generation,
-                (unavailable.source, unavailable.id.clone()),
-                Err(java::ProjectCheckError::NoEligibleFile(
-                    "no eligible file".into(),
-                )),
-            );
-            assert!(!mods.checking(unavailable));
-            assert!(!mods.support(unavailable).installable());
-            for project in &first_page[2..] {
-                complete_check(&mut mods, project, Verdict::No);
-            }
-            assert!(mods.shown().is_empty());
-            assert_eq!(mods.default_check_error(), Some("network timeout"));
-            assert_eq!(mods.next_default_offset(), None);
-            let retried = mods.retry_default_checks();
-            assert_eq!(retried.as_slice(), std::slice::from_ref(failed));
-            assert!(mods.waiting_for_modrinth_defaults());
-            complete_check(&mut mods, failed, Verdict::No);
-            assert!(mods.default_check_error().is_none());
-            assert_eq!(mods.next_default_offset(), Some(PAGE));
-
-            // An edit stays in the field until submitted. The continuation uses the sent query.
-            mods.text.set("not submitted".into());
-            let (source, next_query) = mods.begin_search(PAGE, false, false);
-            assert_eq!(source, SourceId::Modrinth);
-            assert_eq!(
-                next_query,
-                Query {
-                    offset: PAGE,
-                    ..first_query
-                }
-            );
-            let next_page = mods.finish_search(mods.search, PAGE, Ok(search_page(PAGE)));
-            complete_check(&mut mods, &next_page[0], Verdict::Works);
-            for project in &next_page[1..] {
-                complete_check(&mut mods, project, Verdict::No);
-            }
-            assert_eq!(mods.shown(), [PAGE]);
-            assert!(!mods.waiting_for_modrinth_defaults());
-            assert_eq!(mods.next_default_offset(), None);
-            assert!(mods.more, "the user can still ask for the next page");
-        });
-    }
-
-    #[cfg(debug_assertions)]
-    #[gpui::test]
-    async fn default_modrinth_page_budget_keeps_manual_more(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| {
-            let mut mods = modrinth_tab(cx);
-            for page in 0..DEFAULT_MODRINTH_PAGES {
-                let offset = page * PAGE;
-                mods.begin_search(offset, false, false);
-                let found = mods.finish_search(mods.search, offset, Ok(search_page(offset)));
-                for project in &found {
-                    complete_check(&mut mods, project, Verdict::No);
-                }
-            }
-            assert!(mods.more && mods.shown().is_empty());
-            assert!(!mods.waiting_for_modrinth_defaults());
-            assert_eq!(mods.next_default_offset(), None);
-
-            let offset = mods.results.len();
-            let (_, manual) = mods.begin_search(offset, false, false);
-            assert_eq!(manual.offset, PAGE * DEFAULT_MODRINTH_PAGES);
-            let last = modrinth_mod("last-page");
-            mods.finish_search(mods.search, offset, Ok(vec![last.clone()]));
-            complete_check(&mut mods, &last, Verdict::Works);
-            assert_eq!(mods.shown(), [offset]);
-            assert!(!mods.more, "a short page is the end of the results");
-        });
-    }
-
-    #[cfg(debug_assertions)]
-    struct ModResultsView {
-        mods: Mods,
-        theme: theme::Theme,
-        more_requested: Option<usize>,
-        retried: Vec<String>,
-        search_retry: Option<(SourceId, Query)>,
-    }
-
-    #[cfg(debug_assertions)]
-    impl Render for ModResultsView {
-        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-            if self.mods.error.is_some() {
-                return div().child(search_retry_button(
-                    &self.theme,
-                    cx.listener(|this, _: &ClickEvent, _, cx| {
-                        this.search_retry = this.mods.retry_search();
-                        cx.notify();
-                    }),
-                ));
-            }
-            let retry = cx.listener(|this, _: &ClickEvent, _, cx| {
-                this.retried = this
-                    .mods
-                    .retry_default_checks()
-                    .into_iter()
-                    .map(|p| p.id)
-                    .collect();
-                cx.notify();
-            });
-            let more = cx.listener(|this, _: &ClickEvent, _, cx| {
-                this.more_requested = Some(this.mods.results.len());
-                cx.notify();
-            });
-            if self.mods.shown().is_empty() {
-                empty_mod_results(&self.mods, &self.theme, retry, more)
-            } else {
-                let rows = div().flex().flex_col().child(
-                    div()
-                        .debug_selector(|| "test-compatible-row".into())
-                        .child("Compatible mod"),
-                );
-                mod_results_footer(rows, &self.mods, &self.theme, retry, more)
-            }
-        }
-    }
-
-    #[cfg(debug_assertions)]
-    #[gpui::test]
-    async fn both_modrinth_looks_keep_more_and_check_retry_reachable(
-        cx: &mut gpui::TestAppContext,
-    ) {
-        for glass in [false, true] {
-            for (failed, compatible) in [(false, false), (true, false), (true, true)] {
-                let (view, cx) = cx.add_window_view(|window, cx| {
-                    let mut mods = modrinth_tab(cx);
-                    for page in 0..DEFAULT_MODRINTH_PAGES {
-                        let offset = page * PAGE;
-                        mods.begin_search(offset, false, glass);
-                        let found =
-                            mods.finish_search(mods.search, offset, Ok(search_page(offset)));
-                        for project in &found {
-                            complete_check(&mut mods, project, Verdict::No);
-                        }
-                    }
-                    if failed {
-                        let key = (SourceId::Modrinth, "test-mod-0".into());
-                        mods.finish_check(
-                            mods.check_generation,
-                            key,
-                            Err(java::ProjectCheckError::Failed("network timeout".into())),
-                        );
-                    }
-                    if compatible {
-                        complete_check(&mut mods, &modrinth_mod("test-mod-1"), Verdict::Works);
-                    }
-                    assert!(mods.more);
-                    assert_eq!(!mods.shown().is_empty(), compatible);
-                    let mut theme = theme::from_settings(&Settings::default(), window.appearance());
-                    theme.glass = glass;
-                    ModResultsView {
-                        mods,
-                        theme,
-                        more_requested: None,
-                        retried: Vec::new(),
-                        search_retry: None,
-                    }
-                });
-                cx.run_until_parked();
-                let more = cx
-                    .debug_bounds("mods-more")
-                    .expect("More remains on screen");
-                assert!(more.size.width > px(0.) && more.size.height > px(0.));
-                cx.simulate_click(more.center(), gpui::Modifiers::default());
-                view.update(cx, |view, _| {
-                    assert_eq!(view.more_requested, Some(PAGE * DEFAULT_MODRINTH_PAGES));
-                });
-
-                let retry = cx.debug_bounds("mods-check-retry");
-                assert_eq!(retry.is_some(), failed);
-                if let Some(retry) = retry {
-                    cx.simulate_click(retry.center(), gpui::Modifiers::default());
-                    view.update(cx, |view, _| {
-                        assert_eq!(view.retried, ["test-mod-0"]);
-                        assert!(view.mods.waiting_for_modrinth_defaults());
-                        assert_eq!(!view.mods.shown().is_empty(), compatible);
-                    });
-                }
-                assert_eq!(cx.debug_bounds("test-compatible-row").is_some(), compatible);
-            }
-        }
-    }
-
-    #[cfg(debug_assertions)]
-    #[gpui::test]
-    async fn both_modrinth_looks_retry_the_failed_continuation(cx: &mut gpui::TestAppContext) {
-        for glass in [false, true] {
-            let (view, cx) = cx.add_window_view(|window, cx| {
-                let mut mods = modrinth_tab(cx);
-                mods.browse.filters.categories.push("worldgen".into());
-                for page in 0..DEFAULT_MODRINTH_PAGES {
-                    let offset = page * PAGE;
-                    mods.begin_search(offset, false, glass);
-                    mods.finish_search(mods.search, offset, Ok(search_page(offset)));
-                }
-                let offset = mods.results.len();
-                mods.begin_search(offset, false, glass);
-                mods.finish_search(mods.search, offset, Err("catalogue unavailable".into()));
-                mods.text.set("unsubmitted search".into());
-                let mut theme = theme::from_settings(&Settings::default(), window.appearance());
-                theme.glass = glass;
-                ModResultsView {
-                    mods,
-                    theme,
-                    more_requested: None,
-                    retried: Vec::new(),
-                    search_retry: None,
-                }
-            });
-            cx.run_until_parked();
-            let retry = cx.debug_bounds("mods-retry").expect("retry is reachable");
-            cx.simulate_click(retry.center(), gpui::Modifiers::default());
-            view.update(cx, |view, _| {
-                let mods = &mut view.mods;
-                let (source, query) = view.search_retry.as_ref().expect("retry was submitted");
-                assert_eq!(*source, SourceId::Modrinth);
-                assert_eq!(query.offset, PAGE * DEFAULT_MODRINTH_PAGES);
-                assert!(query.text.is_empty());
-                assert_eq!(query.filters.categories, ["worldgen"]);
-                assert_eq!(mods.results.len(), query.offset);
-                assert!(mods.more && mods.searching && mods.error.is_none());
-                let previous = mods.search - 1;
-                mods.finish_search(previous, query.offset, Err("late failure".into()));
-                assert!(mods.searching && mods.error.is_none());
-                mods.finish_search(mods.search, query.offset, Ok(vec![modrinth_mod("last")]));
-                assert_eq!(mods.results.len(), query.offset + 1);
-                assert_eq!(mods.results[0].id, "test-mod-0");
-
-                let submitted = mods.begin_search(0, false, glass);
-                mods.finish_search(mods.search, 0, Err("first page failed".into()));
-                mods.text.set("another unsubmitted edit".into());
-                assert_eq!(mods.retry_search(), Some(submitted));
-            });
-        }
-    }
-
-    #[cfg(debug_assertions)]
-    #[gpui::test]
-    async fn kept_filter_search_retains_rows_until_its_new_results_arrive(
+    fn cleared_resource_pack_search_scans_with_the_submitted_filters(
         cx: &mut gpui::TestAppContext,
     ) {
         cx.update(|cx| {
-            let mut mods = modrinth_tab(cx);
-            let project = modrinth_mod("working-fixture");
-            mods.begin_search(0, false, true);
-            mods.finish_search(mods.search, 0, Ok(vec![project.clone()]));
-            complete_check(&mut mods, &project, Verdict::Works);
-            let old_generation = mods.check_generation;
-
-            mods.browse.filters.game_version = Some("1.21.1".into());
-            mods.begin_search(0, true, true);
-            let superseded = mods.search;
-            mods.begin_search(0, true, true);
-            assert_eq!(mods.shown(), [0]);
-            assert_eq!(mods.picked_project().as_ref(), Some(&project));
-            assert!(
-                mods.checking(&project),
-                "kept checks do not enable installation"
-            );
-            assert!(mods.finish_search(superseded, 0, Ok(Vec::new())).is_empty());
-            assert_eq!(mods.shown(), [0]);
-
-            mods.finish_search(mods.search, 0, Ok(vec![project.clone()]));
-            assert_ne!(mods.check_generation, old_generation);
-            mods.finish_check(
-                old_generation,
-                (project.source, project.id.clone()),
-                Ok(verdict(&project, Verdict::Works)),
-            );
-            assert!(mods.shown().is_empty());
-            assert!(mods.picked_project().is_none());
-            complete_check(&mut mods, &project, Verdict::Works);
-            assert_eq!(mods.shown(), [0]);
-        });
-    }
-
-    #[cfg(debug_assertions)]
-    #[gpui::test]
-    async fn blank_glass_search_does_not_show_a_previous_unchecked_detail(
-        cx: &mut gpui::TestAppContext,
-    ) {
-        cx.update(|cx| {
-            let mut mods = modrinth_tab(cx);
-            let project = modrinth_mod("unchecked-detail");
-            mods.text.set("search text".into());
-            mods.begin_search(0, false, true);
-            mods.finish_search(mods.search, 0, Ok(vec![project.clone()]));
-            assert_eq!(mods.picked_project().as_ref(), Some(&project));
-            mods.begin_search(0, false, true);
-            mods.finish_search(mods.search, 0, Ok(Vec::new()));
-            assert_eq!(mods.picked_project().as_ref(), Some(&project));
+            let mut mods = Mods::new(cx);
+            mods.set_kind(PackKind::ResourcePack);
+            assert_eq!(mods.source(), SourceId::Modrinth);
+            mods.text.set("stone".into());
+            mods.browse.filters.categories.push("realistic".into());
+            mods.submitted = Some(mods.new_query());
+            let mut rejected = project(mods.kind, mods.source());
+            rejected.blocked = Some("Incompatible".into());
+            mods.results = vec![rejected.clone(); PAGE];
+            mods.more = true;
+            assert_eq!(mods.next_default_page(), None);
 
             mods.text.set(String::new());
-            mods.begin_search(0, false, true);
-            mods.finish_search(mods.search, 0, Ok(vec![project.clone()]));
-            assert!(mods.picked_project().is_none());
-            complete_check(&mut mods, &project, Verdict::Works);
-            assert_eq!(mods.picked_project().as_ref(), Some(&project));
+            mods.submitted = Some(mods.new_query());
+            assert_eq!(mods.next_default_page(), Some(PAGE));
+            let submitted = mods.begin_page(PAGE).unwrap();
+            mods.text.set("unsubmitted edit".into());
+            mods.error = Some("connection interrupted".into());
+            let offset = mods.submitted.as_ref().unwrap().offset;
+            assert_eq!(mods.begin_page(offset), Some(submitted.clone()));
+            assert!(submitted.text.is_empty());
+            assert_eq!(submitted.filters.categories, ["realistic"]);
+            assert!(mods.error.is_none() && mods.searching);
+
+            mods.results.resize(2 * PAGE, rejected.clone());
+            assert_eq!(mods.next_default_page(), Some(2 * PAGE));
+            mods.results.resize(DEFAULT_SCAN_PAGES * PAGE, rejected);
+            assert_eq!(mods.next_default_page(), None);
+            assert!(mods.more);
+            mods.results.truncate(PAGE);
+            mods.results.push(project(mods.kind, mods.source()));
+            assert_eq!(mods.next_default_page(), None);
+            mods.reset_browse_context();
+            assert!(mods.begin_page(PAGE).is_none());
         });
     }
 
-    #[cfg(debug_assertions)]
     #[gpui::test]
-    async fn modrinth_search_ignores_late_pages_and_superseded_checks(
+    fn pack_scan_respects_show_everything_and_instance_routing(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            let mut mods = Mods::new(cx);
+            for kind in [PackKind::DataPack, PackKind::ResourcePack] {
+                mods.set_kind(kind);
+                mods.submitted = Some(mods.new_query());
+                assert!(mods.filtered_pack_defaults());
+                mods.toggle_everything();
+                mods.submitted = Some(mods.new_query());
+                assert!(!mods.filtered_pack_defaults());
+            }
+            for kind in [PackKind::Mod, PackKind::Shader, PackKind::Modpack] {
+                mods.set_kind(kind);
+                mods.submitted = Some(mods.new_query());
+                assert!(!mods.filtered_pack_defaults());
+            }
+            mods.set_kind(PackKind::ResourcePack);
+            mods.set_target(
+                Some("java".into()),
+                None,
+                Some(Target {
+                    minecraft: "1.21.1".into(),
+                    loader: Some("fabric".into()),
+                }),
+            );
+            mods.submitted = Some(mods.new_query());
+            assert!(!mods.filtered_pack_defaults());
+        });
+    }
+
+    #[gpui::test]
+    fn palette_install_is_independent_of_the_active_pack_tab(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            let mut mods = Mods::new(cx);
+            mods.set_kind(PackKind::ResourcePack);
+            let registry_mod = Box::new(project(PackKind::Mod, SourceId::Horizon));
+            let browse = InstallRequest::Browse(registry_mod.clone());
+            let palette = InstallRequest::Palette(registry_mod);
+            assert_eq!(mods.source(), SourceId::Modrinth);
+            assert_eq!(mods.install_kind(&browse), None);
+            let kind = mods.install_kind(&palette).unwrap();
+            let (source, _) = palette.item();
+            assert!(can_install_in(kind, source, None));
+
+            let java = Target {
+                minecraft: "1.21.1".into(),
+                loader: Some("fabric".into()),
+            };
+            assert!(!can_install_in(kind, source, Some(&java)));
+        });
+    }
+
+    #[gpui::test]
+    fn empty_results_after_switching_instances_drop_the_cached_card(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            let mut mods = Mods::new(cx);
+            mods.set_target(Some("horizon".into()), Some(PathBuf::from("horizon")), None);
+            mods.set_kind(PackKind::Shader);
+            mods.source = SourceId::Modrinth;
+            let mut project = project(PackKind::Shader, SourceId::Modrinth);
+            project.loaders.push("iris".into());
+            mods.results.push(project);
+            mods.searched = true;
+            assert!(mods.picked_project().is_some());
+            mods.results.clear();
+            assert!(mods.picked_project().is_some());
+
+            let java = Target {
+                minecraft: "1.21.1".into(),
+                loader: Some("fabric".into()),
+            };
+            mods.set_target(
+                Some("fabric".into()),
+                Some(PathBuf::from("fabric")),
+                Some(java.clone()),
+            );
+            mods.searched = true;
+            assert!(mods.picked_project().is_none());
+            assert!(mods.shown.is_none());
+            assert!(!can_install_in(
+                PackKind::Shader,
+                SourceId::Modrinth,
+                Some(&java)
+            ));
+            assert!(can_install_in(
+                PackKind::ResourcePack,
+                SourceId::Modrinth,
+                Some(&java)
+            ));
+            assert!(can_install_in(PackKind::Shader, SourceId::Modrinth, None));
+        });
+    }
+
+    #[gpui::test]
+    fn pack_tabs_show_source_controls_for_the_right_context(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            let mut mods = Mods::new(cx);
+            let java = Target {
+                minecraft: "1.21.1".into(),
+                loader: Some("fabric".into()),
+            };
+            for (kind, default, switch, everything, java_source) in [
+                (
+                    PackKind::Mod,
+                    SourceId::Horizon,
+                    false,
+                    false,
+                    SourceId::Modrinth,
+                ),
+                (
+                    PackKind::Modpack,
+                    SourceId::Horizon,
+                    false,
+                    false,
+                    SourceId::Horizon,
+                ),
+                (
+                    PackKind::ResourcePack,
+                    SourceId::Modrinth,
+                    true,
+                    true,
+                    SourceId::Modrinth,
+                ),
+                (
+                    PackKind::Shader,
+                    SourceId::Horizon,
+                    true,
+                    false,
+                    SourceId::Horizon,
+                ),
+                (
+                    PackKind::DataPack,
+                    SourceId::Modrinth,
+                    true,
+                    true,
+                    SourceId::Horizon,
+                ),
+            ] {
+                assert_eq!(source_for(kind), default);
+                mods.kind = kind;
+                for picked in [SourceId::Horizon, SourceId::Modrinth] {
+                    mods.source = picked;
+                    mods.java = None;
+                    assert_eq!(mods.source(), if switch { picked } else { default });
+                    assert_eq!(
+                        switches(kind, mods.java.is_some()),
+                        switch,
+                        "{kind:?} {picked:?}"
+                    );
+                    assert_eq!(
+                        mods.can_show_everything(),
+                        everything && picked == SourceId::Modrinth,
+                        "{kind:?} {picked:?}"
+                    );
+
+                    mods.java = Some(java.clone());
+                    assert_eq!(mods.source(), java_source);
+                    assert!(
+                        !switches(kind, mods.java.is_some()),
+                        "Java {kind:?} {picked:?}"
+                    );
+                    assert!(!mods.can_show_everything(), "Java {kind:?} {picked:?}");
+                }
+            }
+        });
+    }
+
+    #[gpui::test]
+    fn resetting_browse_keeps_the_drawer_open_and_clears_filters(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            let mut mods = Mods::new(cx);
+            mods.browse.show_filters = true;
+            mods.browse.filters.categories.push("decoration".into());
+
+            mods.reset_browse_context();
+
+            assert!(mods.browse.show_filters);
+            assert_eq!(mods.browse.filters.picked(), 0);
+        });
+    }
+
+    #[gpui::test]
+    fn turning_off_show_everything_removes_filters_that_become_unavailable(
         cx: &mut gpui::TestAppContext,
     ) {
         cx.update(|cx| {
-            let mut mods = modrinth_tab(cx);
-            mods.begin_search(0, false, false);
-            let empty_search = mods.search;
-            mods.text.set("trees".into());
-            let (_, typed) = mods.begin_search(0, false, false);
-            let typed_search = mods.search;
-            assert_eq!(typed.text, "trees");
-            assert!(mods
-                .finish_search(empty_search, 0, Ok(vec![modrinth_mod("old-default")]))
-                .is_empty());
-            let project = modrinth_mod("matched-tree");
-            mods.finish_search(typed_search, 0, Ok(vec![project.clone()]));
-            assert_eq!(mods.shown(), [0], "typed results still show pending rows");
+            let mut mods = Mods::new(cx);
+            for kind in [PackKind::ResourcePack, PackKind::DataPack] {
+                mods.kind = kind;
+                mods.everything = true;
+                let filters = &mut mods.browse.filters;
+                filters.game_version = Some("1.21.1".into());
+                filters.categories = vec!["decoration".into()];
+                if kind == PackKind::ResourcePack {
+                    filters.categories.push("modded".into());
+                }
 
-            mods.text.set(String::new());
-            mods.begin_search(0, false, false);
-            let cleared_search = mods.search;
-            mods.finish_search(typed_search, 0, Err("late search error".into()));
-            assert!(mods.error.is_none() && mods.waiting_for_modrinth_defaults());
+                mods.toggle_everything();
 
-            mods.toggle_everything();
-            let (_, show_all) = mods.begin_search(0, false, false);
-            let show_all_search = mods.search;
-            let old_checks = mods.check_generation;
-            assert!(show_all.everything);
-            mods.finish_search(show_all_search, 0, Ok(vec![project.clone()]));
-            assert_eq!(mods.shown(), [0]);
-            assert!(!mods.waiting_for_modrinth_defaults());
-            assert_eq!(mods.next_default_offset(), None);
-
-            mods.toggle_everything();
-            let (_, filtered) = mods.begin_search(0, false, false);
-            assert!(!filtered.everything);
-            assert_ne!(old_checks, mods.check_generation);
-            for previous in [cleared_search, show_all_search] {
-                assert!(mods
-                    .finish_search(previous, 0, Ok(vec![project.clone()]))
-                    .is_empty());
+                assert!(!mods.everything);
+                let filters = &mods.browse.filters;
+                assert_eq!(filters.game_version, None);
+                assert!(!filters.other_version());
+                assert_eq!(filters.categories, ["decoration"]);
+                assert_eq!(filters.picked(), 1);
             }
-            mods.finish_search(mods.search, 0, Ok(vec![project.clone()]));
-            let key = (project.source, project.id.clone());
-            assert!(mods
-                .finish_check(
-                    old_checks,
-                    key.clone(),
-                    Ok(verdict(&project, Verdict::Works))
-                )
-                .is_none());
-            assert!(mods.shown().is_empty());
-            assert!(mods.waiting_for_modrinth_defaults());
-            complete_check(&mut mods, &project, Verdict::Works);
-            assert!(mods
-                .finish_check(old_checks, key, Ok(verdict(&project, Verdict::No)))
-                .is_none());
-            assert_eq!(mods.shown(), [0]);
         });
     }
 
@@ -2761,17 +2738,31 @@ mod tests {
 
     #[test]
     fn show_everything_lists_what_doesnt_run() {
+        let project = |id: &str| Project {
+            source: SourceId::Modrinth,
+            id: id.into(),
+            slug: id.into(),
+            title: id.into(),
+            summary: String::new(),
+            author: String::new(),
+            downloads: 0,
+            page: String::new(),
+            icon: None,
+            license: String::new(),
+            kind: PackKind::Mod,
+            game_versions: vec!["26.3".into()],
+            loaders: vec!["fabric".into()],
+            blocked: None,
+        };
         let results: Vec<Project> = ["fabric-api", "ferrite-core", "sodium", "fresh"]
             .into_iter()
-            .map(modrinth_mod)
+            .map(project)
             .collect();
         // The verdicts the jar checks gave; `fresh` is still being checked.
-        let support = |p: &Project| {
-            Some(match p.id.as_str() {
-                "fabric-api" | "sodium" => Support::No("Uses mixins.".into()),
-                "ferrite-core" => Support::Works,
-                _ => Support::Partial("Checking its jar…".into()),
-            })
+        let support = |p: &Project| match p.id.as_str() {
+            "fabric-api" | "sodium" => Support::No("Uses mixins.".into()),
+            "ferrite-core" => Support::Works,
+            _ => Support::Partial("Checking its jar…".into()),
         };
         assert_eq!(shown(&results, false, support), [1, 3]);
         assert_eq!(shown(&results, true, support), [0, 1, 2, 3]);
