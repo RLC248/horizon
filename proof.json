@@ -1,0 +1,849 @@
+{
+  "pr_head": "8d407e85147b50641c4b6aeee8ea5b295d059136",
+  "os": "Windows x64",
+  "game_build": {
+    "source": "8d407e85147b50641c4b6aeee8ea5b295d059136",
+    "sha256": {
+      "horizon-client.exe": "F5ACBAC973900669A0D9471906F4E2FCFE6AADB5FBC9628A6FD1CEABF3DB182A",
+      "horizon-ctl.exe": "52EC700344CEFC393CFDAFB90FDB67D4F3D574AA0AD2249E4BA90DFBE729A49B"
+    },
+    "rust": "1.99.1"
+  },
+  "tests_build": {
+    "sha256": {
+      "client-tests.exe": "8F6E3F9E79DC89177283C448923E428A622315CFAFA7EAE8FA3C5DD759D6362E"
+    },
+    "rust": "1.99.1",
+    "source": "8d407e85147b50641c4b6aeee8ea5b295d059136"
+  },
+  "game_and_test_job_run": 45066216309,
+  "wasm_probe_job_run": 45067165298,
+  "wasm_probe_source": "8b19c87087558c2cb9e09e68c65a08683dabd034",
+  "wasm_artifact_sha256": {
+    "horizon-wasm-std.wasm": "3c647d91c7c943ffb65a31ec406392de328daa7a6d2779e44e71c3561068b7dc",
+    "transition_proof.hmod": "7ea7f888ff9e34205b61d9e7aa5325c59ef23ad7e1b32111742ea28c3e5e8aed"
+  },
+  "screenshots_sha256": {
+    "login.png": "a3135ceec6c23501c0307048dd0e01d2288a14f41fec05dccc16b47be6b61fdd",
+    "end-portal-block.png": "28ec44761f4104cc24903754e62c6515d16964574f039fe8c92040946524c125",
+    "end-portal-travel.png": "264cfc0644d0a3fa191cf1a6a67620b58b3e39ae70d78093b83a1df1bd90e4bd",
+    "end-arrival.png": "8dd029d024e5d9f40a8676bfb139a4a4d2ba1d8341d801a26f18bcad6bd20449",
+    "end-death-screen.png": "3ba36012318bd1e319355706d279746cd1b8e3e3c0d7e326ea18abd35c78dc98",
+    "death-respawn.png": "62e08a54e8fcac051469f80a6a010b671ce066d5474245c6fc0d43fa522992db",
+    "developer-end-portal-travel.png": "264cfc0644d0a3fa191cf1a6a67620b58b3e39ae70d78093b83a1df1bd90e4bd",
+    "developer-death-respawn.png": "62e08a54e8fcac051469f80a6a010b671ce066d5474245c6fc0d43fa522992db"
+  },
+  "horizon_ctl_output": {
+    "standard": [
+      {
+        "command": "horizon-ctl hello",
+        "reply": {
+          "features": [
+            "game",
+            "station",
+            "blocks",
+            "lan",
+            "friends",
+            "render",
+            "sculk",
+            "agent",
+            "ui",
+            "options",
+            "events",
+            "saves",
+            "pad",
+            "studio"
+          ],
+          "protocol": "0.1.0",
+          "release": "0.1.0"
+        }
+      },
+      {
+        "command": "horizon-ctl wait-for screen title --timeout 90",
+        "reply": {
+          "ok": true,
+          "screen": "title",
+          "waited_seconds": 9.3e-06
+        }
+      },
+      {
+        "command": "horizon-ctl open TransitionProof 248 creative",
+        "reply": {
+          "ok": true
+        }
+      },
+      {
+        "command": "horizon-ctl wait-ready 400",
+        "reply": {
+          "screen": "playing",
+          "dimension": "minecraft:overworld",
+          "health": 20.0,
+          "server": {
+            "address": "local",
+            "joined": true,
+            "loaded": true,
+            "decode_errors": 0
+          },
+          "renderer": {
+            "backend": "Vulkan",
+            "size": [
+              960,
+              540
+            ]
+          }
+        }
+      },
+      {
+        "command": "horizon-ctl state",
+        "reply": {
+          "screen": "playing",
+          "dimension": "minecraft:overworld",
+          "health": 20.0,
+          "world": "TransitionProof"
+        }
+      },
+      {
+        "command": "horizon-ctl command gamerule spawn_mobs false",
+        "reply": {
+          "chat": [
+            "Game rule spawn_mobs is now set to false"
+          ],
+          "ok": true
+        }
+      },
+      {
+        "command": "horizon-ctl command gamemode survival",
+        "reply": {
+          "chat": [
+            "Set own game mode to Survival Mode"
+          ],
+          "ok": true
+        }
+      },
+      {
+        "command": "horizon-ctl command kill @s",
+        "reply": {
+          "chat": [
+            "Killed TransitionProof"
+          ],
+          "ok": true
+        }
+      },
+      {
+        "command": "horizon-ctl wait-for screen dead --timeout 20",
+        "reply": {
+          "ok": true,
+          "screen": "dead",
+          "waited_seconds": 5.9e-06
+        }
+      },
+      {
+        "command": "horizon-ctl state",
+        "reply": {
+          "screen": "dead",
+          "dimension": "minecraft:overworld",
+          "health": 0.0,
+          "world": "TransitionProof"
+        }
+      },
+      {
+        "command": "horizon-ctl wait 25",
+        "reply": {
+          "ok": true,
+          "ticks": 72
+        }
+      },
+      {
+        "command": "horizon-ctl ui",
+        "reply": {
+          "screen": "dead",
+          "widgets": [
+            {
+              "bounds": [
+                140.0,
+                139.0,
+                200.0,
+                20.0
+              ],
+              "enabled": true,
+              "id": "respawn",
+              "kind": "button",
+              "label": "Respawn"
+            }
+          ]
+        }
+      },
+      {
+        "command": "horizon-ctl click respawn",
+        "reply": {
+          "clicked": "respawn",
+          "ok": true,
+          "screen": "dead"
+        }
+      },
+      {
+        "command": "horizon-ctl wait-for screen playing --timeout 45",
+        "reply": {
+          "ok": true,
+          "screen": "playing",
+          "waited_seconds": 0.0073698
+        }
+      },
+      {
+        "command": "horizon-ctl state",
+        "reply": {
+          "screen": "playing",
+          "dimension": "minecraft:overworld",
+          "health": 20.0,
+          "world": "TransitionProof"
+        }
+      },
+      {
+        "command": "horizon-ctl command gamemode creative",
+        "reply": {
+          "chat": [
+            "Set own game mode to Creative Mode"
+          ],
+          "ok": true
+        }
+      },
+      {
+        "command": "horizon-ctl command fill -21 114 21 -13 114 30 minecraft:stone",
+        "reply": {
+          "chat": [
+            "Successfully filled 90 block(s)"
+          ],
+          "ok": true
+        }
+      },
+      {
+        "command": "horizon-ctl command fill -21 115 21 -13 119 30 minecraft:air",
+        "reply": {
+          "chat": [
+            "Successfully filled 16 block(s)"
+          ],
+          "ok": true
+        }
+      },
+      {
+        "command": "horizon-ctl command setblock -17 115 27 minecraft:end_portal",
+        "reply": {
+          "chat": [
+            "Changed the block at -17, 115, 27"
+          ],
+          "ok": true
+        }
+      },
+      {
+        "command": "horizon-ctl block -17 115 27",
+        "reply": {
+          "block": "minecraft:end_portal",
+          "loaded": true,
+          "pos": [
+            -17,
+            115,
+            27
+          ],
+          "state": "minecraft:end_portal"
+        }
+      },
+      {
+        "command": "horizon-ctl command tp @s -16.5 115 24.5",
+        "reply": {
+          "chat": [
+            "Teleported TransitionProof to -16.500000, 115.000000, 24.500000"
+          ],
+          "ok": true
+        }
+      },
+      {
+        "command": "horizon-ctl look 0 25",
+        "reply": {
+          "ok": true
+        }
+      },
+      {
+        "command": "horizon-ctl move forward 1.2",
+        "reply": {
+          "error": "the world closed",
+          "position": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        }
+      },
+      {
+        "command": "horizon-ctl state",
+        "reply": {
+          "screen": "playing",
+          "dimension": "minecraft:the_end",
+          "health": null,
+          "world": "TransitionProof"
+        }
+      },
+      {
+        "command": "horizon-ctl wait-for loaded --timeout 90",
+        "reply": {
+          "ok": true,
+          "screen": "playing",
+          "waited_seconds": 1.11e-05
+        }
+      },
+      {
+        "command": "horizon-ctl command gamemode survival",
+        "reply": {
+          "chat": [
+            "Set own game mode to Survival Mode"
+          ],
+          "ok": true
+        }
+      },
+      {
+        "command": "horizon-ctl command kill @s",
+        "reply": {
+          "chat": [
+            "Killed TransitionProof"
+          ],
+          "ok": true
+        }
+      },
+      {
+        "command": "horizon-ctl wait-for screen dead --timeout 20",
+        "reply": {
+          "ok": true,
+          "screen": "dead",
+          "waited_seconds": 5.7e-06
+        }
+      },
+      {
+        "command": "horizon-ctl wait 25",
+        "reply": {
+          "ok": true,
+          "ticks": 165
+        }
+      },
+      {
+        "command": "horizon-ctl state",
+        "reply": {
+          "screen": "dead",
+          "dimension": "minecraft:the_end",
+          "health": 0.0,
+          "world": "TransitionProof"
+        }
+      },
+      {
+        "command": "horizon-ctl ui",
+        "reply": {
+          "screen": "dead",
+          "widgets": [
+            {
+              "bounds": [
+                140.0,
+                139.0,
+                200.0,
+                20.0
+              ],
+              "enabled": true,
+              "id": "respawn",
+              "kind": "button",
+              "label": "Respawn"
+            }
+          ]
+        }
+      },
+      {
+        "command": "horizon-ctl click respawn",
+        "reply": {
+          "clicked": "respawn",
+          "ok": true,
+          "screen": "dead"
+        }
+      },
+      {
+        "command": "horizon-ctl state",
+        "reply": {
+          "screen": "dead",
+          "dimension": "minecraft:the_end",
+          "health": 0.0,
+          "world": "TransitionProof"
+        }
+      },
+      {
+        "command": "horizon-ctl state",
+        "reply": {
+          "screen": "playing",
+          "dimension": "minecraft:overworld",
+          "health": 20.0,
+          "world": "TransitionProof"
+        }
+      },
+      {
+        "command": "horizon-ctl wait-for loaded --timeout 60",
+        "reply": {
+          "ok": true,
+          "screen": "playing",
+          "waited_seconds": 7.8e-06
+        }
+      },
+      {
+        "command": "horizon-ctl events --limit 50",
+        "reply": {
+          "events": [
+            {
+              "event": "death",
+              "position": [
+                -25.5,
+                109.0,
+                26.5
+              ],
+              "seq": 7,
+              "tick": 46
+            },
+            {
+              "event": "respawn",
+              "seq": 11,
+              "tick": 81
+            },
+            {
+              "event": "dimension",
+              "from": "minecraft:overworld",
+              "seq": 17,
+              "tick": 121,
+              "to": "minecraft:the_end"
+            },
+            {
+              "event": "death",
+              "position": [
+                100.5,
+                49.0,
+                0.5
+              ],
+              "seq": 22,
+              "tick": 138
+            },
+            {
+              "event": "dimension",
+              "from": "minecraft:the_end",
+              "seq": 25,
+              "tick": 171,
+              "to": "minecraft:overworld"
+            },
+            {
+              "event": "respawn",
+              "seq": 27,
+              "tick": 171
+            }
+          ]
+        }
+      },
+      {
+        "command": "horizon-ctl quit",
+        "reply": {
+          "ok": true
+        }
+      }
+    ],
+    "--developer-single-player": [
+      {
+        "command": "horizon-ctl hello",
+        "reply": {
+          "features": [
+            "game",
+            "station",
+            "blocks",
+            "lan",
+            "friends",
+            "render",
+            "sculk",
+            "agent",
+            "ui",
+            "options",
+            "events",
+            "saves",
+            "pad",
+            "studio"
+          ],
+          "protocol": "0.1.0",
+          "release": "0.1.0"
+        }
+      },
+      {
+        "command": "horizon-ctl wait-for screen title --timeout 90",
+        "reply": {
+          "ok": true,
+          "screen": "title",
+          "waited_seconds": 7.8e-06
+        }
+      },
+      {
+        "command": "horizon-ctl open TransitionProof 248 creative",
+        "reply": {
+          "ok": true
+        }
+      },
+      {
+        "command": "horizon-ctl wait-ready 400",
+        "reply": {
+          "screen": "playing",
+          "dimension": "minecraft:overworld",
+          "health": 20.0,
+          "server": {
+            "address": "local",
+            "joined": true,
+            "loaded": true,
+            "decode_errors": 0
+          },
+          "renderer": {
+            "backend": "Vulkan",
+            "size": [
+              960,
+              540
+            ]
+          }
+        }
+      },
+      {
+        "command": "horizon-ctl state",
+        "reply": {
+          "screen": "playing",
+          "dimension": "minecraft:overworld",
+          "health": 20.0,
+          "world": "TransitionProof"
+        }
+      },
+      {
+        "command": "horizon-ctl command gamerule spawn_mobs false",
+        "reply": {
+          "chat": [
+            "Game rule spawn_mobs is now set to false"
+          ],
+          "ok": true
+        }
+      },
+      {
+        "command": "horizon-ctl command gamemode survival",
+        "reply": {
+          "chat": [
+            "Set own game mode to Survival Mode"
+          ],
+          "ok": true
+        }
+      },
+      {
+        "command": "horizon-ctl command kill @s",
+        "reply": {
+          "chat": [
+            "Killed TransitionProof"
+          ],
+          "ok": true
+        }
+      },
+      {
+        "command": "horizon-ctl wait-for screen dead --timeout 20",
+        "reply": {
+          "ok": true,
+          "screen": "dead",
+          "waited_seconds": 1.12e-05
+        }
+      },
+      {
+        "command": "horizon-ctl state",
+        "reply": {
+          "screen": "dead",
+          "dimension": "minecraft:overworld",
+          "health": 0.0,
+          "world": "TransitionProof"
+        }
+      },
+      {
+        "command": "horizon-ctl wait 25",
+        "reply": {
+          "ok": true,
+          "ticks": 70
+        }
+      },
+      {
+        "command": "horizon-ctl ui",
+        "reply": {
+          "screen": "dead",
+          "widgets": [
+            {
+              "bounds": [
+                140.0,
+                139.0,
+                200.0,
+                20.0
+              ],
+              "enabled": true,
+              "id": "respawn",
+              "kind": "button",
+              "label": "Respawn"
+            }
+          ]
+        }
+      },
+      {
+        "command": "horizon-ctl click respawn",
+        "reply": {
+          "clicked": "respawn",
+          "ok": true,
+          "screen": "dead"
+        }
+      },
+      {
+        "command": "horizon-ctl wait-for screen playing --timeout 45",
+        "reply": {
+          "ok": true,
+          "screen": "playing",
+          "waited_seconds": 0.0054764
+        }
+      },
+      {
+        "command": "horizon-ctl state",
+        "reply": {
+          "screen": "playing",
+          "dimension": "minecraft:overworld",
+          "health": 20.0,
+          "world": "TransitionProof"
+        }
+      },
+      {
+        "command": "horizon-ctl command gamemode creative",
+        "reply": {
+          "chat": [
+            "Set own game mode to Creative Mode"
+          ],
+          "ok": true
+        }
+      },
+      {
+        "command": "horizon-ctl command fill -30 95 9 -22 95 18 minecraft:stone",
+        "reply": {
+          "chat": [
+            "Successfully filled 42 block(s)"
+          ],
+          "ok": true
+        }
+      },
+      {
+        "command": "horizon-ctl command fill -30 96 9 -22 100 18 minecraft:air",
+        "reply": {
+          "chat": [
+            "Successfully filled 271 block(s)"
+          ],
+          "ok": true
+        }
+      },
+      {
+        "command": "horizon-ctl command setblock -26 96 15 minecraft:end_portal",
+        "reply": {
+          "chat": [
+            "Changed the block at -26, 96, 15"
+          ],
+          "ok": true
+        }
+      },
+      {
+        "command": "horizon-ctl block -26 96 15",
+        "reply": {
+          "block": "minecraft:end_portal",
+          "loaded": true,
+          "pos": [
+            -26,
+            96,
+            15
+          ],
+          "state": "minecraft:end_portal"
+        }
+      },
+      {
+        "command": "horizon-ctl command tp @s -25.5 96 12.5",
+        "reply": {
+          "chat": [
+            "Teleported TransitionProof to -25.500000, 96.000000, 12.500000"
+          ],
+          "ok": true
+        }
+      },
+      {
+        "command": "horizon-ctl look 0 25",
+        "reply": {
+          "ok": true
+        }
+      },
+      {
+        "command": "horizon-ctl move forward 1.2",
+        "reply": {
+          "error": "the world closed",
+          "position": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        }
+      },
+      {
+        "command": "horizon-ctl state",
+        "reply": {
+          "screen": "playing",
+          "dimension": "minecraft:the_end",
+          "health": 20.0,
+          "world": "TransitionProof"
+        }
+      },
+      {
+        "command": "horizon-ctl wait-for loaded --timeout 90",
+        "reply": {
+          "ok": true,
+          "screen": "playing",
+          "waited_seconds": 5.9e-06
+        }
+      },
+      {
+        "command": "horizon-ctl command gamemode survival",
+        "reply": {
+          "chat": [
+            "Set own game mode to Survival Mode"
+          ],
+          "ok": true
+        }
+      },
+      {
+        "command": "horizon-ctl command kill @s",
+        "reply": {
+          "chat": [
+            "Killed TransitionProof"
+          ],
+          "ok": true
+        }
+      },
+      {
+        "command": "horizon-ctl wait-for screen dead --timeout 20",
+        "reply": {
+          "ok": true,
+          "screen": "dead",
+          "waited_seconds": 4.9e-06
+        }
+      },
+      {
+        "command": "horizon-ctl wait 25",
+        "reply": {
+          "ok": true,
+          "ticks": 157
+        }
+      },
+      {
+        "command": "horizon-ctl state",
+        "reply": {
+          "screen": "dead",
+          "dimension": "minecraft:the_end",
+          "health": 0.0,
+          "world": "TransitionProof"
+        }
+      },
+      {
+        "command": "horizon-ctl ui",
+        "reply": {
+          "screen": "dead",
+          "widgets": [
+            {
+              "bounds": [
+                140.0,
+                139.0,
+                200.0,
+                20.0
+              ],
+              "enabled": true,
+              "id": "respawn",
+              "kind": "button",
+              "label": "Respawn"
+            }
+          ]
+        }
+      },
+      {
+        "command": "horizon-ctl click respawn",
+        "reply": {
+          "clicked": "respawn",
+          "ok": true,
+          "screen": "dead"
+        }
+      },
+      {
+        "command": "horizon-ctl state",
+        "reply": {
+          "screen": "playing",
+          "dimension": "minecraft:overworld",
+          "health": 20.0,
+          "world": "TransitionProof"
+        }
+      },
+      {
+        "command": "horizon-ctl wait-for loaded --timeout 60",
+        "reply": {
+          "ok": true,
+          "screen": "playing",
+          "waited_seconds": 7e-06
+        }
+      },
+      {
+        "command": "horizon-ctl events --limit 50",
+        "reply": {
+          "events": [
+            {
+              "event": "death",
+              "position": [
+                -8.5,
+                101.0,
+                16.5
+              ],
+              "seq": 7,
+              "tick": 42
+            },
+            {
+              "event": "respawn",
+              "seq": 10,
+              "tick": 76
+            },
+            {
+              "event": "dimension",
+              "from": "minecraft:overworld",
+              "seq": 16,
+              "tick": 114,
+              "to": "minecraft:the_end"
+            },
+            {
+              "event": "death",
+              "position": [
+                100.5,
+                49.0,
+                0.5
+              ],
+              "seq": 21,
+              "tick": 131
+            },
+            {
+              "event": "dimension",
+              "from": "minecraft:the_end",
+              "seq": 24,
+              "tick": 163,
+              "to": "minecraft:overworld"
+            },
+            {
+              "event": "respawn",
+              "seq": 26,
+              "tick": 163
+            }
+          ]
+        }
+      },
+      {
+        "command": "horizon-ctl quit",
+        "reply": {
+          "ok": true
+        }
+      }
+    ]
+  }
+}

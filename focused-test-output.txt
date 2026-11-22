@@ -1,0 +1,6 @@
+
+running 1 test
+test game::remote::dimension_transition_tests::dimension_transition_draw_distinguishes_login_death_respawn_and_travel ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 5231 filtered out; finished in 17.79s
+
