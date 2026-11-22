@@ -35,6 +35,8 @@ pub struct Internal {
 #[derive(Debug, Default)]
 pub struct Widened {
     pub entries: Vec<Internal>,
+    /// Named lower-crate exports a marked trait method uses from outside its own module.
+    pub(crate) staged_exports: BTreeSet<String>,
     /// Items whose visibility actually changed, grouped by kind.
     pub changed: BTreeMap<&'static str, usize>,
     pub files: usize,
@@ -206,6 +208,7 @@ struct Pass {
     /// two guarded alternatives of one item.
     entries: BTreeMap<EntryKey, Internal>,
     uses: BTreeMap<EntryKey, (String, TypeUses)>,
+    staged_exports: BTreeSet<String>,
     /// The conditions of the module being visited.
     cfg: Vec<String>,
     /// Widening only: the items and fields visited are made public and listed nowhere, for a
@@ -1260,6 +1263,62 @@ impl Pass {
         Ok(())
     }
 
+    /// A moved trait method can access private fields of its owner in another module.
+    /// Widen the referenced declarations and keep their paths for the pristine-source mirror.
+    fn widen_trait_declarations(
+        &mut self,
+        root: &Path,
+        markers: &[crate::replace::MarkedFunction],
+    ) -> Result<(), String> {
+        let mut marked_traits = markers
+            .iter()
+            .filter_map(|marker| Some((marker, marker.trait_path.as_deref()?)))
+            .peekable();
+        if marked_traits.peek().is_none() {
+            return Ok(());
+        }
+        let mut shapes = Shapes::new(root)?;
+        let mut declarations = BTreeMap::new();
+        for (marker, trait_path) in marked_traits {
+            let crate_name = marker.module.split("::").next().expect("a crate");
+            if !shapes.roots.contains_key(crate_name) {
+                let (_, lib) = crate::source::crate_root(root, crate_name)?;
+                shapes.roots.insert(crate_name.to_owned(), lib);
+            }
+            let (_, owner, _) = crate::patch::target_path(&marker.target)
+                .and_then(|target| target.qualified)
+                .expect("a marked trait method has a qualified target");
+            let owners = shapes.resolve(&marker.module, &owner, &mut BTreeSet::new())?;
+            let prefix = format!("{crate_name}::");
+            if owners.len() != 1 || !owners.keys().any(|path| path.starts_with(&prefix)) {
+                return Err(marker.error("cannot resolve the trait owner's declaration"));
+            }
+            let traits = shapes.resolve(&marker.module, trait_path, &mut BTreeSet::new())?;
+            for path in owners
+                .into_keys()
+                .chain(traits.into_keys().filter(|path| path.starts_with(&prefix)))
+            {
+                if let Some((module, _)) = path.rsplit_once("::")
+                    && module != marker.module
+                {
+                    declarations.insert(path, marker);
+                }
+            }
+        }
+        self.reaching = true;
+        for (path, marker) in declarations {
+            self.lower(root, &path, false)
+                .map_err(|error| marker.error(&format!("cannot widen {path}: {error}")))?;
+            let mut path = path.as_str();
+            while let Some((parent, _)) = path.rsplit_once("::") {
+                self.staged_exports.insert(path.to_owned());
+                path = parent;
+            }
+        }
+        self.reaching = false;
+        Ok(())
+    }
+
     fn shapes(&mut self, root: &Path) -> Result<(), String> {
         let mut shapes = Shapes::new(root)?;
         let mut aliases = BTreeSet::new();
@@ -1391,6 +1450,7 @@ impl Pass {
     fn finish(self) -> Result<Widened, String> {
         let mut widened = Widened {
             entries: self.entries.into_values().collect(),
+            staged_exports: self.staged_exports,
             ..Widened::default()
         };
         for source in self.sources {
@@ -1509,10 +1569,12 @@ fn collect(root: &Path, lists: &[(&str, String)], discovery: bool) -> Result<Pas
             }
         }
     }
-    for function in crate::replace::marked(root)? {
+    let marked = crate::replace::marked(root)?;
+    for function in &marked {
         pass.lower(root, &function.module, true)
             .map_err(|error| function.error(&error))?;
     }
+    pass.widen_trait_declarations(root, &marked)?;
     pass.shapes(root)?;
     if discovery {
         let crates: BTreeSet<_> = pass

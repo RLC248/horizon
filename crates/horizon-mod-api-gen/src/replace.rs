@@ -823,6 +823,8 @@ fn inventory(
 pub(crate) struct MarkedFunction {
     pub(crate) module: String,
     pub(crate) target: String,
+    /// The trait path as written in its impl, including any module qualifiers.
+    pub(crate) trait_path: Option<String>,
 }
 
 impl MarkedFunction {
@@ -830,6 +832,9 @@ impl MarkedFunction {
         Self {
             module: module.to_owned(),
             target: crate::functions::key(&function_target(module, block, name)),
+            trait_path: block
+                .and_then(|block| block.trait_.as_ref())
+                .map(|(_, path, _)| quote!(#path).to_string().replace(' ', "")),
         }
     }
 

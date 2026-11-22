@@ -1,8 +1,9 @@
 //! The SDK's source-staging command for replacement methods below the game crate.
 use horizon_mod_api_gen::functions::FunctionIndex;
+use horizon_mod_api_gen::patch::{self, Extras};
 use mod_surface::build_data::{self, Build};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn put(root: &Path, path: &str, text: &str) {
@@ -67,6 +68,39 @@ fn succeeds(command: &mut Command) {
     );
 }
 
+fn staged_index(root: &Path) -> FunctionIndex {
+    succeeds(&mut stage(root));
+    let json = fs::read_to_string(root.join("functions.json")).unwrap();
+    let (_, index): (Build, FunctionIndex) = build_data::read("functions.json", &json).unwrap();
+    index
+}
+
+fn compile_lower(root: &Path) -> PathBuf {
+    // The marker itself is a no-op procedural attribute. Omit it for this direct
+    // rustc fixture, which compiles the staged source without a Cargo workspace.
+    let file = root.join("crates/lower/src/goals.rs");
+    let staged = fs::read_to_string(&file).unwrap();
+    fs::write(
+        &file,
+        staged.replace("#[horizon_mod_api_macros::replaceable]", ""),
+    )
+    .unwrap();
+    let library = root.join("liblower.rlib");
+    succeeds(
+        Command::new("rustc")
+            .args([
+                "--edition=2024",
+                "--crate-name=lower",
+                "--crate-type=rlib",
+                "-Dwarnings",
+            ])
+            .arg(root.join("crates/lower/src/lib.rs"))
+            .arg("-o")
+            .arg(&library),
+    );
+    library
+}
+
 #[test]
 fn lower_trait_methods_stage_with_independent_slots() {
     let goals = r#"
@@ -100,10 +134,7 @@ impl Tempt {
 "#;
     let temp = fixture(goals);
     let root = temp.path();
-    succeeds(&mut stage(root));
-
-    let json = fs::read_to_string(root.join("functions.json")).unwrap();
-    let (_, index): (Build, FunctionIndex) = build_data::read("functions.json", &json).unwrap();
+    let index = staged_index(root);
     let target = &index.functions["lower::goals::<Tempt as Goal>::can_use"];
     let [start, end] = target.span;
     assert!(goals[start..end].contains("self.cooldown + offset()"));
@@ -114,28 +145,7 @@ impl Tempt {
     );
     assert!(!index.functions.contains_key("lower::goals::Tempt::can_use"));
 
-    // The marker itself is a no-op procedural attribute. Omit it for this direct
-    // rustc fixture, which compiles the staged source without a Cargo workspace.
-    let file = root.join("crates/lower/src/goals.rs");
-    let staged = fs::read_to_string(&file).unwrap();
-    fs::write(
-        &file,
-        staged.replace("#[horizon_mod_api_macros::replaceable]", ""),
-    )
-    .unwrap();
-    let library = root.join("liblower.rlib");
-    succeeds(
-        Command::new("rustc")
-            .args([
-                "--edition=2024",
-                "--crate-name=lower",
-                "--crate-type=rlib",
-                "-Dwarnings",
-            ])
-            .arg(root.join("crates/lower/src/lib.rs"))
-            .arg("-o")
-            .arg(&library),
-    );
+    let library = compile_lower(root);
 
     // A consumer uses the widened type and its fields and installs the replacements.
     put(
@@ -168,6 +178,79 @@ fn main() {
             .arg(&program),
     );
     succeeds(&mut Command::new(program));
+}
+
+#[test]
+fn copies_can_read_private_owner_fields_from_a_parent_or_sibling_module() {
+    let declarations = r#"
+pub(crate) struct Tempt { cooldown: u32 }
+pub(crate) trait Goal { fn can_use(&self) -> u32; }
+#[allow(dead_code)]
+fn unrelated() {}
+"#;
+    for (owner_module, import) in [
+        ("lower", "use super::{Goal, Tempt};"),
+        ("lower::model", "use super::model::{Goal, Tempt};"),
+    ] {
+        let goals = format!(
+            "{import}\nimpl Goal for Tempt {{\n    #[horizon_mod_api_macros::replaceable]\n    fn can_use(&self) -> u32 {{ self.cooldown + 1 }}\n}}\n"
+        );
+        let pristine = fixture(&goals);
+        let staged = fixture(&goals);
+        for root in [pristine.path(), staged.path()] {
+            if owner_module == "lower" {
+                put(
+                    root,
+                    "crates/lower/src/lib.rs",
+                    &format!("mod goals;\n{declarations}"),
+                );
+            } else {
+                put(root, "crates/lower/src/lib.rs", "mod goals;\nmod model;\n");
+                put(root, "crates/lower/src/model.rs", declarations);
+            }
+        }
+        let index = staged_index(staged.path());
+        assert!(
+            index
+                .staged_exports
+                .contains(&format!("{owner_module}::Tempt"))
+        );
+        assert!(
+            index
+                .staged_exports
+                .contains(&format!("{owner_module}::Goal"))
+        );
+        let patch = patch::generate(
+            pristine.path(),
+            "fixture_patch",
+            &["lower::goals::<Tempt as Goal>::can_use".into()],
+            &Extras::default(),
+            &index,
+        )
+        .unwrap();
+        let [(crate_name, source)] = patch.libs.as_slice() else {
+            panic!("expected one patch crate, got {:?}", patch.libs);
+        };
+        assert!(!source.contains("unrelated"));
+        let root = staged.path();
+        let library = compile_lower(root);
+        put(root, "patch.rs", source);
+        succeeds(
+            Command::new("rustc")
+                .args([
+                    "--edition=2024",
+                    "--crate-type=rlib",
+                    "-Dwarnings",
+                    "--crate-name",
+                ])
+                .arg(crate_name)
+                .arg("--extern")
+                .arg(format!("lower={}", library.display()))
+                .arg(root.join("patch.rs"))
+                .arg("--out-dir")
+                .arg(root),
+        );
+    }
 }
 
 #[test]

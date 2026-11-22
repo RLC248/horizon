@@ -26,6 +26,9 @@ pub struct FunctionIndex {
     pub functions: BTreeMap<String, Function>,
     /// The functions it can't, by [`key`], with the refusal a row naming one gets.
     pub refused: BTreeMap<String, Refused>,
+    /// The lower-crate types, traits and modules made public for marked trait methods.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub staged_exports: BTreeSet<String>,
 }
 
 /// One crate's modules, as a copy's mirror reads them. Every crate of the source is listed, so a
