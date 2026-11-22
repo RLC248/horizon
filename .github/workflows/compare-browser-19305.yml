@@ -1,0 +1,37 @@
+name: Compare Windows launcher suites
+on:
+  push:
+    branches: [validation/19305-windows-comparison-ba5bbef095]
+permissions:
+  contents: read
+jobs:
+  compare:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ba5bbef0950055259a7afc7cb2ccfd5d12d3fecd
+          persist-credentials: false
+      - name: Test the PR launcher binary suite
+        shell: pwsh
+        run: |
+          $env:CARGO_TARGET_DIR = Join-Path $env:RUNNER_TEMP hzt
+          $pin = (Get-Content tools/ci/rust-version -Raw).Trim()
+          rustup toolchain install $pin --profile minimal
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo "+$pin" test --manifest-path launcher/Cargo.toml --locked --bin horizon-launcher
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ebd843ffea4bbd044cebabef44ffebbe34749750
+          persist-credentials: false
+      - name: Compare the main-branch migration assertion on the same Windows runner
+        shell: pwsh
+        run: |
+          $env:CARGO_TARGET_DIR = Join-Path $env:RUNNER_TEMP hzt
+          $pin = (Get-Content tools/ci/rust-version -Raw).Trim()
+          cargo "+$pin" test --manifest-path launcher/Cargo.toml --locked --lib instances::tests::migration_leaves_both_files_untouched_when_version_or_instance_data_cannot_be_read -- --exact
