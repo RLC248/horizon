@@ -12,6 +12,7 @@ env:
   CARGO_BUILD_JOBS: '2'
 jobs:
   windows:
+    if: ${{ github.event.before == '0000000000000000000000000000000000000000' }}
     strategy:
       fail-fast: false
       matrix:
