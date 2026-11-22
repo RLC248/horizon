@@ -112,17 +112,18 @@ impl Game<'_> {
             return false;
         }
         let mut instant = false;
-        let object = self.remote_object_hit(true);
-        // A ghast's fireball or a wind charge nearer than other entities: the
+        // A ghast's fireball or a wind charge nearer than a mob or primed TNT: the
         // server turns it (game/items/deflect.rs).
         if let Some((i, distance)) = self.redirectable_hit()
             && self.mob_hit().is_none_or(|(_, d, _)| distance <= d)
-            && object.as_ref().is_none_or(|hit| distance <= hit.distance)
+            && self
+                .primed_tnt_hit(self.entity_reach)
+                .is_none_or(|(_, d)| distance <= d)
             && self.before_block(distance)
             && self.creatures.projectiles[i].id != 0
         {
             self.remote_attack_entity(self.creatures.projectiles[i].id as i32, distance);
-        } else if let Some(hit) = object
+        } else if let Some(hit) = self.remote_object_hit(true)
             && self.mob_hit().is_none_or(|(_, d, _)| hit.distance < d)
             && self.before_block(hit.distance)
         {

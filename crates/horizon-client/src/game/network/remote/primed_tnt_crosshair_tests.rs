@@ -1,4 +1,7 @@
 use super::*;
+use crate::game::minecarts::{CartKind, Minecart};
+use horizon_client::projectiles::{Projectile, ProjectileKind};
+use horizon_core::position::BlockPos;
 
 #[derive(Clone, Default)]
 struct ClickSpy(Arc<Mutex<Vec<&'static str>>>);
@@ -20,6 +23,13 @@ impl Hooks for ClickSpy {
         self.0.lock().unwrap().push(action);
         Flow::Continue
     }
+
+    fn sweep_attack(&self, _: HostSide<'_>, event: &mut mod_api::SweepAttackEvent<'_>) -> Flow {
+        if event.target == "minecraft:tnt" {
+            self.0.lock().unwrap().push("tnt-sweep-check");
+        }
+        Flow::Continue
+    }
 }
 
 #[test]
@@ -38,13 +48,7 @@ fn the_crosshair_picks_only_visible_in_reach_primed_tnt() {
             game.block_reach = 4.5;
             game.yaw = 0.0;
             game.pitch = 0.0;
-            game.add_primed_tnt(
-                horizon_core::position::BlockPos::new(0, 65, 5),
-                0.0,
-                80,
-                None,
-                None,
-            );
+            game.add_primed_tnt(BlockPos::new(0, 65, 5), 0.0, 80, None, None);
             let id = game.tnts[0].id as i32;
             let cow = game.res.mob_types().get("minecraft:cow").unwrap().clone();
             let stone = game
@@ -92,10 +96,12 @@ fn the_crosshair_picks_only_visible_in_reach_primed_tnt() {
                     .is_some_and(|(_, target)| target == Some(id));
                 println!("tnt-crosshair: {case} {hit}");
                 assert_eq!(hit, visible, "{case}");
+                let living = (case == "nearer_cow").then_some(true);
+                assert_eq!(game.crosshair_living(), living, "attack indicator: {case}");
                 if case == "open" {
                     assert!(game.entity_targeted());
                     game.remote_start_attack();
-                    assert_eq!(*spy.0.lock().unwrap(), ["attack"]);
+                    assert_eq!(*spy.0.lock().unwrap(), ["attack", "tnt-sweep-check"]);
                     spy.0.lock().unwrap().clear();
                     game.world.set(0, 65, 6, stone).unwrap();
                     assert_eq!(game.pick().map(|hit| hit.pos), Some([0, 65, 6]));
@@ -106,8 +112,85 @@ fn the_crosshair_picks_only_visible_in_reach_primed_tnt() {
                     game.world.set(0, 65, 6, air).unwrap();
                 }
             }
+            check_projectile_order(game, &spy);
+            check_spectator_crosshair(game);
         });
     });
+}
+
+fn check_projectile_order(game: &mut Game<'_>, spy: &ClickSpy) {
+    game.add_primed_tnt(BlockPos::new(0, 65, 5), 0.0, 80, None, None);
+    let id = game.tnts[0].id as i32;
+    for (z, tnt_first) in [(7.35, true), (5.0, false)] {
+        game.creatures.projectiles.clear();
+        game.add_projectile(Projectile::new(
+            ProjectileKind::WindCharge,
+            Vec3::new(0.5, 65.5, z),
+            None,
+        ));
+        assert!(game.redirectable_hit().is_some());
+        assert_eq!(
+            game.pick_entity_hit(),
+            Some(tnt_first.then_some(id)),
+            "wind charge at z={z}"
+        );
+
+        spy.0.lock().unwrap().clear();
+        game.remote_start_attack();
+        let expected_attack: &[&str] = if tnt_first {
+            &["attack", "tnt-sweep-check"]
+        } else {
+            &["attack"]
+        };
+        assert_eq!(*spy.0.lock().unwrap(), expected_attack);
+
+        spy.0.lock().unwrap().clear();
+        game.remote_use(mod_api::InteractionAttempt::Press);
+        let expected_use: &[&str] = if tnt_first {
+            &["interact", "use_item", "interact"]
+        } else {
+            &["use_item"]
+        };
+        assert_eq!(*spy.0.lock().unwrap(), expected_use);
+    }
+    game.creatures.projectiles.clear();
+    game.remove_entity(id);
+}
+
+fn check_spectator_crosshair(game: &mut Game<'_>) {
+    game.set_mode_id(3);
+    game.entity_reach = 3.0;
+    game.block_reach = 4.5;
+    game.carts.push(Minecart::new(
+        700,
+        CartKind::Chest,
+        Vec3::new(0.5, 65.25, 6.5),
+    ));
+    assert!(game.spectator_crosshair(), "the chest cart is in reach");
+    game.add_primed_tnt(BlockPos::new(0, 65, 5), 0.0, 80, None, None);
+    assert!(!game.spectator_crosshair(), "the TNT covers the chest cart");
+    game.tnts[0].position.x = 1.5;
+    assert!(game.spectator_crosshair(), "the ray misses the TNT's box");
+
+    game.carts.clear();
+    game.tnts[0].position.x = 0.5;
+    let barrel = game
+        .pack
+        .assets
+        .registry
+        .default_state("minecraft:barrel")
+        .unwrap();
+    game.world.set(0, 65, 7, barrel).unwrap();
+    game.tnts[0].position.z = 9.5;
+    assert!(game.spectator_crosshair(), "the barrel is in block reach");
+    // LocalPlayer.pick sees the closer entity within block reach and
+    // returns a miss after applying the shorter entity reach.
+    game.tnts[0].position.z = 7.1;
+    assert!(game.primed_tnt_hit(game.entity_reach).is_none());
+    assert!(
+        !game.spectator_crosshair(),
+        "the reach-filtered pick misses"
+    );
 }
 
 #[derive(Clone, Debug, PartialEq)]

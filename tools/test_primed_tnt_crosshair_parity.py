@@ -36,7 +36,8 @@ def main():
     sources = [Path(__file__), oracle, *(
         lab.ROOT / 'crates/horizon-client/src/game' / source for source in [
             'network/remote_vehicles.rs', 'network/remote/interaction_actions.rs',
-            'network/remote/interaction_prediction.rs', 'network/remote/primed_tnt_crosshair_tests.rs'
+            'network/remote/interaction_prediction.rs', 'network/remote/primed_tnt_crosshair_tests.rs',
+            'entities/tnt.rs', 'items/hand.rs'
         ]
     )]
     hashes = base.source_hashes(sources)
