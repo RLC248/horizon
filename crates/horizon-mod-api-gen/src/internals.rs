@@ -1077,6 +1077,8 @@ impl Pass {
         }
     }
 
+    /// An explicit internals entry names an item. A replacement's body can use other items
+    /// in the source module, so a marker passes the module path and widens it as a unit.
     fn lower(&mut self, root: &Path, path: &str, whole_module: bool) -> Result<(), String> {
         self.cfg.clear();
         let parsed: syn::Path = syn::parse_str(path).map_err(|e| format!("invalid path: {e}"))?;
@@ -1103,7 +1105,7 @@ impl Pass {
             if let Some(child) = child {
                 self.item(file, &module, &Item::Mod(child.clone()), false);
                 module = format!("{module}::{ident}");
-                if index + 1 == segments.len() {
+                if !whole_module && index + 1 == segments.len() {
                     return Ok(());
                 }
                 self.cfg.extend(conditions(&child.attrs));
@@ -1144,6 +1146,9 @@ impl Pass {
                 }
                 continue;
             }
+            if whole_module {
+                return Err("module not found".into());
+            }
             let rest = &segments[index..];
             if rest.len() == 1 {
                 let selected = items
@@ -1160,11 +1165,7 @@ impl Pass {
                         _ => false,
                     })
                     .ok_or("item not found")?;
-                if whole_module {
-                    self.whole(file, &module, &items)?;
-                } else {
-                    self.item(file, &module, selected, false);
-                }
+                self.item(file, &module, selected, false);
                 return Ok(());
             }
             if rest.len() == 2 {
@@ -1208,9 +1209,6 @@ impl Pass {
                     }
                 }
                 if found {
-                    if whole_module {
-                        self.whole(file, &module, &items)?;
-                    }
                     for item in &items {
                         if matches!(item, Item::Struct(value) if value.ident == *ident)
                             || matches!(item, Item::Enum(value) if value.ident == *ident)
@@ -1224,7 +1222,11 @@ impl Pass {
             }
             return Err("item not found".into());
         }
-        Err("path names a crate, not an item".into())
+        if whole_module {
+            self.whole(file, &module, &items)
+        } else {
+            Err("path names a crate, not an item".into())
+        }
     }
 
     /// `items`, in `file`, with the fragments they `include!` by a literal path, which rustc
@@ -1507,9 +1509,9 @@ fn collect(root: &Path, lists: &[(&str, String)], discovery: bool) -> Result<Pas
             }
         }
     }
-    for (origin, path) in crate::replace::marked(root)? {
-        pass.lower(root, &path, true)
-            .map_err(|e| format!("{origin}: {path}: {e}"))?;
+    for function in crate::replace::marked(root)? {
+        pass.lower(root, &function.module, true)
+            .map_err(|error| function.error(&error))?;
     }
     pass.shapes(root)?;
     if discovery {

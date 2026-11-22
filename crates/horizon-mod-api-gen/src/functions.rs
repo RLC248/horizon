@@ -290,12 +290,13 @@ pub(crate) fn index_of(
 ) -> Result<FunctionIndex, String> {
     let mut source = Source::new(root)?;
     // Below the game crate, only the functions marked `#[replaceable]` take a replacement.
-    let marked: BTreeSet<String> = crate::replace::marked(root)?
-        .into_iter()
-        .map(|(_, path)| key(&path))
+    let marked_functions = crate::replace::marked(root)?;
+    let marked: BTreeMap<_, _> = marked_functions
+        .iter()
+        .map(|function| (function.target.as_str(), function))
         .collect();
     let lower: BTreeSet<&str> = marked
-        .iter()
+        .keys()
         .filter_map(|path| path.split("::").next())
         .filter(|krate| *krate != "horizon_client")
         .collect();
@@ -405,11 +406,15 @@ pub(crate) fn index_of(
     for (key, mut found) in candidates {
         let krate = key.split("::").next().unwrap_or_default();
         if only.is_some_and(|only| !only.contains(&key))
-            || (krate != "horizon_client" && !marked.contains(&key))
+            || (krate != "horizon_client" && !marked.contains_key(key.as_str()))
         {
             continue;
         }
+        let marked_trait = marked.get(key.as_str()).filter(|_| key.contains("::<"));
         if found.len() > 1 {
+            if let Some(function) = marked_trait {
+                return Err(function.error("several implementations share this replacement target"));
+            }
             index.refused.insert(
                 key,
                 Refused {
@@ -425,6 +430,9 @@ pub(crate) fn index_of(
                 index.functions.insert(key, candidate.function);
             }
             Err(why) => {
+                if let Some(function) = marked_trait {
+                    return Err(function.error(&why));
+                }
                 index.refused.insert(
                     key,
                     Refused {
