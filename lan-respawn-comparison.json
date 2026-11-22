@@ -1,0 +1,54 @@
+{
+  "pr_runs": [
+    {
+      "respawn": {
+        "pass": false,
+        "detail": "AssertionError(\"the host was not drawn dead: {'host': {'dead': [], 'after_respawn': []}}\")"
+      },
+      "arguments": "--check respawn --check portals"
+    },
+    {
+      "respawn": {
+        "pass": false,
+        "detail": "AssertionError(\"the host was not drawn dead: {'host': {'dead': [], 'after_respawn': []}}\")"
+      },
+      "arguments": "--check respawn --check levels"
+    }
+  ],
+  "shared_harness_source": "tools/lan_e2e.py",
+  "pr_free_source": {
+    "sha256": {
+      "horizon-client.exe": "590AFED91CF1E5B84D2FB49C4DE8EFD70AC63267AE124962A5008AA32FE13ECB",
+      "horizon-ctl.exe": "69A71FC9ACECDC044CC5ADD9AE1BA58657546A84392E83BCB21DBD4C1F6A39C0"
+    },
+    "source": "ff9bb08f875ac1e8a5268412015b8b97a8881df2",
+    "rust": "1.99.1"
+  },
+  "graphics": "Vulkan, offscreen",
+  "host": "Windows x64",
+  "source_parent": "a02b2838d34f4c99726cca349ec0b4d62c5c8fa5",
+  "pr_free_run": {
+    "respawn": {
+      "pass": false,
+      "detail": "AssertionError(\"the host was not drawn dead: {'host': {'dead': [], 'after_respawn': []}}\")"
+    },
+    "arguments": "--check respawn"
+  },
+  "pr_source": {
+    "source": "8d407e85147b50641c4b6aeee8ea5b295d059136",
+    "sha256": {
+      "horizon-client.exe": "F5ACBAC973900669A0D9471906F4E2FCFE6AADB5FBC9628A6FD1CEABF3DB182A",
+      "horizon-ctl.exe": "52EC700344CEFC393CFDAFB90FDB67D4F3D574AA0AD2249E4BA90DFBE729A49B"
+    },
+    "rust": "1.99.1"
+  },
+  "resources": "Same prepared Minecraft 26.3 resource pack",
+  "pr_free_build_run": 45066007965,
+  "unchanged_in_comparison": [
+    "tools/lan_e2e.py",
+    "crates/horizon-client/src/game/network/remote/screens.rs",
+    "crates/horizon-client/src/game/network/remote/apply_packet.rs",
+    "crates/horizon-client/src/game/network/lan_actions/respawn.rs",
+    "crates/horizon-client/src/game/network/lan_actions/interaction.rs"
+  ]
+}
