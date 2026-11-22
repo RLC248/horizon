@@ -94,12 +94,17 @@ impl Game<'_> {
         remote.tracked_entity(i32::try_from(entity.id()).ok()?)
     }
 
-    /// The live client box of a tracked display, which is held outside the entity lists.
-    pub(super) fn native_client_display_bounds(&self, entity: EntityRef) -> Option<Aabb> {
+    /// The tracked display's position at the current interpolation tick.
+    fn native_client_display_position(&self, entity: EntityRef) -> Option<[f64; 3]> {
         let id = i32::try_from(entity.id()).ok()?;
         let display = self.text_displays.get(&id)?;
         self.native_client_tracked(entity)?;
-        let [x, y, z] = display.position().to_array();
+        Some(display.position().to_array())
+    }
+
+    /// The live client box of a tracked display, which is held outside the entity lists.
+    pub(super) fn native_client_display_bounds(&self, entity: EntityRef) -> Option<Aabb> {
+        let [x, y, z] = self.native_client_display_position(entity)?;
         let position = Vec3::new(x, y, z);
         // The dimensions of all three display types are zero. Width and height
         // metadata enlarge only the renderer's culling box.
@@ -374,7 +379,7 @@ impl Game<'_> {
                 .map(|id| EntityRef::new(level.epoch(), id))
                 .filter(|handle| {
                     self.native_entity_read_target(*handle).is_some()
-                        || self.native_client_display_bounds(*handle).is_some()
+                        || self.native_client_display_position(*handle).is_some()
                 })
                 .collect(),
         )
@@ -837,9 +842,10 @@ impl Game<'_> {
         }
         match self.native_entity_read_target(entity) {
             Some(target) => self.target_position(target),
-            None => self
-                .native_client_tracked(entity)
-                .map(|(_, position)| position),
+            None => self.native_client_display_position(entity).or_else(|| {
+                self.native_client_tracked(entity)
+                    .map(|(_, position)| position)
+            }),
         }
     }
     /// The block the entity's position is in (`Entity.blockPosition`). API

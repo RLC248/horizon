@@ -163,7 +163,8 @@ pub trait EntitiesBackend {
     fn entity_added_to_level(&self, entity: EntityRef) -> bool;
     /// Side: both.
     /// The entity's position (`Entity.position`): its feet, the middle of
-    /// its box for a painting or an item frame.
+    /// its box for a painting or an item frame. A client display reports the
+    /// current interpolation tick's position.
     #[access(WorldOnly)]
     fn entity_position(&self, entity: EntityRef) -> Option<[f64; 3]>;
     /// Side: server.

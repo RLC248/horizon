@@ -6,8 +6,14 @@ use horizon_core::{
 };
 use horizon_protocol::{
     connection::Pipe,
-    entity_data::{Value, serializer::FLOAT},
-    packets::play::{AddEntity, Clientbound as C, RemoveEntities, SetEntityData},
+    entity_data::{
+        Value,
+        serializer::{FLOAT, INT},
+    },
+    packets::play::{
+        AddEntity, Clientbound as C, EntityPositionSync, PositionPath, RemoveEntities,
+        SetEntityData,
+    },
 };
 use mod_api::{CrosshairTarget, DisplayKind, Host, LevelRef};
 use std::sync::Arc;
@@ -79,6 +85,7 @@ fn a_client_queries_tracked_display_entities_without_picking_them() {
         game.handle_packet(C::SetEntityData(SetEntityData {
             id: 21,
             values: vec![
+                (10, INT, Value::Int(2)),
                 (20, FLOAT, Value::Float(2.0)),
                 (21, FLOAT, Value::Float(2.0)),
             ],
@@ -100,9 +107,33 @@ fn a_client_queries_tracked_display_entities_without_picking_them() {
             Some(CrosshairTarget::Entity { entity, .. }) if entity.id() == 24
         ));
 
+        game.handle_packet(C::EntityPositionSync(EntityPositionSync {
+            id: 21,
+            path: PositionPath::Linear([10.5, 152.0, 4.0]),
+            yaw: 0.0,
+            pitch: 0.0,
+            on_ground: false,
+        }))
+        .unwrap();
+        let assert_block_position = |host: &dyn Host, x: f64| {
+            let min = [x - 0.25, 151.5, 3.5];
+            let max = [x + 0.25, 153.1, 4.5];
+            assert_eq!(query_ids(host, level, min, max), [21]);
+            assert_eq!(block.position(host), Some([x, 152.0, 4.0]));
+            assert_eq!(block.bounding_box(host), Some([[x, 152.0, 4.0]; 2]));
+        };
+        assert_block_position(game, 0.5);
+        assert!(query_ids(game, level, [10.25, 151.5, 3.5], [10.75, 153.1, 4.5]).is_empty());
+        game.tick_text_displays();
+        assert_block_position(game, 5.5);
+        game.tick_text_displays();
+        assert_block_position(game, 10.5);
+
         game.handle_packet(C::RemoveEntities(RemoveEntities { ids: vec![21] }))
             .unwrap();
+        assert!(query_ids(game, level, [10.25, 151.5, 3.5], [10.75, 153.1, 4.5]).is_empty());
         assert_eq!(query_ids(game, level, min, max), [22, 7]);
+        assert_eq!(block.position(game), None);
         assert_eq!(block.bounding_box(game), None);
     });
 }
