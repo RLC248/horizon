@@ -1,0 +1,48 @@
+name: Build exact parent for PR 19292 LAN comparison
+on:
+  push:
+    branches: [validation/19292-lan-base]
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 85
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      CARGO_BUILD_JOBS: '2'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: a02b2838d34f4c99726cca349ec0b4d62c5c8fa5
+          persist-credentials: false
+      - name: Build the PR parent with the same Windows profile and features
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $head = git rev-parse HEAD
+          if ($head -ne 'a02b2838d34f4c99726cca349ec0b4d62c5c8fa5') { throw "Unexpected checkout $head" }
+          $version = (Get-Content tools/ci/rust-version -Raw).Trim()
+          rustup toolchain install $version --profile minimal --component rust-src --target wasm32-unknown-unknown
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $env:RUSTUP_TOOLCHAIN = $version
+          $env:CARGO_TARGET_DIR = Join-Path $env:RUNNER_TEMP 'hzt'
+          $env:HORIZON_NIGHTLY = "PR #19292 parent $($head.Substring(0,12))"
+          $env:CARGO_PROFILE_FAST_OPT_LEVEL = '1'
+          cargo build --locked --profile fast -p horizon-game -p horizon-client-lib --bin horizon-client --bin horizon-ctl --features horizon-game/testing
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $null = New-Item -ItemType Directory -Path validation-output
+          $hashes = @{}
+          foreach ($name in @('horizon-client.exe', 'horizon-ctl.exe')) {
+            Copy-Item -LiteralPath (Join-Path $env:CARGO_TARGET_DIR "fast/$name") -Destination validation-output
+            $hashes[$name] = (Get-FileHash "validation-output/$name" -Algorithm SHA256).Hash
+          }
+          @{ source = $head; sha256 = $hashes; rust = $version } | ConvertTo-Json | Set-Content validation-output/source.json -Encoding utf8
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: horizon-19292-lan-base-a02b2838d34
+          path: validation-output/
+          retention-days: 3
+          if-no-files-found: error
