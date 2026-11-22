@@ -993,6 +993,7 @@ pub fn generate(
                     };
                     quote! {
                         #[doc(hidden)]
+                        #[allow(non_snake_case)]
                         pub fn #install() -> bool {
                             <#elided>::#constructor(<#elided as #trait_ref>::#method)
                         }
