@@ -1,0 +1,364 @@
+{
+  "source": {
+    "sha256": {
+      "horizon-client.exe": "590AFED91CF1E5B84D2FB49C4DE8EFD70AC63267AE124962A5008AA32FE13ECB",
+      "horizon-ctl.exe": "69A71FC9ACECDC044CC5ADD9AE1BA58657546A84392E83BCB21DBD4C1F6A39C0"
+    },
+    "source": "ff9bb08f875ac1e8a5268412015b8b97a8881df2",
+    "rust": "1.99.1"
+  },
+  "platform": "Windows",
+  "transport": "integrated host / real LAN guest over TCP loopback",
+  "processes": {
+    "host": 56180,
+    "guest": 50424
+  },
+  "host_lan": {
+    "guests": [
+      {
+        "absorption": 0.0,
+        "air": 300,
+        "chunks": 117,
+        "fall_flying": false,
+        "food": [
+          20.0,
+          5.0,
+          0.0
+        ],
+        "game_mode": 1,
+        "health": 20.0,
+        "loaded": true,
+        "name": "LANMenuHost",
+        "placed": true,
+        "position": [
+          9.5,
+          79.0,
+          6.5
+        ],
+        "shield_cooldown": 0,
+        "sleeping": null,
+        "sneaking": false,
+        "tracked": 1,
+        "using": null
+      },
+      {
+        "absorption": 0.0,
+        "air": 300,
+        "chunks": 9,
+        "fall_flying": false,
+        "food": [
+          20.0,
+          5.0,
+          0.0
+        ],
+        "game_mode": 0,
+        "health": 20.0,
+        "loaded": true,
+        "name": "LANMenuGuest",
+        "placed": true,
+        "position": [
+          8.5,
+          70.0,
+          -5.5
+        ],
+        "shield_cooldown": 0,
+        "sleeping": null,
+        "sneaking": false,
+        "tracked": 1,
+        "using": null
+      }
+    ],
+    "host": "LANMenuHost",
+    "open": true,
+    "port": 47014,
+    "world": {
+      "chunks": 182,
+      "generated": 182
+    }
+  },
+  "block": {
+    "id": "lan_menu_proof:machine",
+    "position": [
+      6,
+      79,
+      6
+    ]
+  },
+  "menu_type": "lan_menu_proof:storage",
+  "block_click": {
+    "block": {
+      "block": "lan_menu_proof:machine",
+      "loaded": true,
+      "pos": [
+        6,
+        79,
+        6
+      ],
+      "state": "lan_menu_proof:machine"
+    },
+    "block_before": "lan_menu_proof:machine",
+    "changed": false,
+    "inventory_change": {},
+    "ok": true,
+    "screen": "container"
+  },
+  "held_item_sneak_click_same_block": {
+    "block": {
+      "block": "lan_menu_proof:machine",
+      "loaded": true,
+      "pos": [
+        6,
+        79,
+        6
+      ],
+      "state": "lan_menu_proof:machine"
+    },
+    "block_before": "lan_menu_proof:machine",
+    "changed": false,
+    "inventory_change": {},
+    "ok": true,
+    "screen": "container"
+  },
+  "block_menu": {
+    "title": "Storage block",
+    "slots": [
+      {
+        "count": 11,
+        "item": "minecraft:gold_ingot",
+        "slot": 300
+      }
+    ],
+    "slot_bounds_relative_to_first_hotbar_slot": {
+      "slot-300": [
+        27.0,
+        -100.0,
+        16.0,
+        16.0
+      ]
+    }
+  },
+  "held_item_menu": {
+    "title": "Held paper pouch",
+    "initial_slots": [
+      {
+        "item": null,
+        "slot": 300
+      },
+      {
+        "item": null,
+        "slot": 301
+      }
+    ],
+    "slot_bounds_relative_to_first_hotbar_slot": {
+      "slot-300": [
+        11.0,
+        -105.0,
+        16.0,
+        16.0
+      ],
+      "slot-301": [
+        112.0,
+        -88.0,
+        16.0,
+        16.0
+      ]
+    },
+    "filled_slots": [
+      {
+        "count": 3,
+        "item": "minecraft:emerald",
+        "slot": 300
+      },
+      {
+        "count": 5,
+        "item": "minecraft:diamond",
+        "slot": 301
+      }
+    ],
+    "reopened_slots": [
+      {
+        "count": 3,
+        "item": "minecraft:emerald",
+        "slot": 300
+      },
+      {
+        "count": 5,
+        "item": "minecraft:diamond",
+        "slot": 301
+      }
+    ]
+  },
+  "host_stayed_in_world": true,
+  "mod_sha256": "5f82c3bc18f1873382302960bb77b1fa4ca12748d55ec6490123d9625a82b108",
+  "mod_source": "436f6348ec097a2c6dfb9010276a8ad605843ff5",
+  "screenshots": {
+    "guest-bare-stock-chest.png": "a0969e0bc4d5e4b7130ced3dce86252cc5e37123338f1950381f31b346937620",
+    "guest-block-menu.png": "ca983cf6fcc7a9ee9b4662f8bb07c75175852b5a4f1af97b9fcf434f864c0af4",
+    "guest-held-item-menu.png": "fbfc8af984e6e8f86de5c7f31d9e911a70a2b0f93714f83b82901e4937290876",
+    "guest-held-item-reopened.png": "4523aa3a793ac2a5a4ea9bd18c44069517ed2d35ddbcf4b5f2a2d5cc954d4e03",
+    "guest-origin-chest-block.png": "61f2f2163ba6265310f68bbf54bd54a235348dd34ae820323ab3f04243427ae9",
+    "host-lan-world.png": "c8aea88bc3561489f93827b53595bf8eea740ca80268161007249bc9c684f9ce"
+  },
+  "bare_open_screen": {
+    "block": {
+      "id": "lan_menu_proof:chest_machine",
+      "position": [
+        7,
+        79,
+        6
+      ]
+    },
+    "menu_type": "minecraft:generic_9x1",
+    "block_click": {
+      "block": {
+        "block": "lan_menu_proof:chest_machine",
+        "loaded": true,
+        "pos": [
+          7,
+          79,
+          6
+        ],
+        "state": "lan_menu_proof:chest_machine"
+      },
+      "block_before": "lan_menu_proof:chest_machine",
+      "changed": false,
+      "inventory_change": {},
+      "ok": true,
+      "screen": "container"
+    },
+    "held_item_sneak_click_same_block": {
+      "block": {
+        "block": "lan_menu_proof:chest_machine",
+        "loaded": true,
+        "pos": [
+          7,
+          79,
+          6
+        ],
+        "state": "lan_menu_proof:chest_machine"
+      },
+      "block_before": "lan_menu_proof:chest_machine",
+      "changed": false,
+      "inventory_change": {},
+      "ok": true,
+      "screen": "container"
+    },
+    "block_menu": {
+      "title": "Chest-layout storage block",
+      "slots": [
+        {
+          "count": 13,
+          "item": "minecraft:iron_ingot",
+          "slot": 300
+        }
+      ],
+      "slot_bounds_relative_to_first_hotbar_slot": {
+        "slot-300": [
+          27.0,
+          -100.0,
+          16.0,
+          16.0
+        ]
+      }
+    },
+    "held_item_menu": {
+      "title": "Held book pouch",
+      "total_slot_count": 45,
+      "container_slots": [
+        {
+          "count": 9,
+          "item": "minecraft:coal",
+          "slot": 300
+        },
+        {
+          "item": null,
+          "slot": 301
+        },
+        {
+          "item": null,
+          "slot": 302
+        },
+        {
+          "item": null,
+          "slot": 303
+        },
+        {
+          "item": null,
+          "slot": 304
+        },
+        {
+          "item": null,
+          "slot": 305
+        },
+        {
+          "item": null,
+          "slot": 306
+        },
+        {
+          "item": null,
+          "slot": 307
+        },
+        {
+          "item": null,
+          "slot": 308
+        }
+      ],
+      "slot_bounds_relative_to_first_hotbar_slot": {
+        "slot-300": [
+          0.0,
+          -89.0,
+          16.0,
+          16.0
+        ],
+        "slot-301": [
+          18.0,
+          -89.0,
+          16.0,
+          16.0
+        ],
+        "slot-302": [
+          36.0,
+          -89.0,
+          16.0,
+          16.0
+        ],
+        "slot-303": [
+          54.0,
+          -89.0,
+          16.0,
+          16.0
+        ],
+        "slot-304": [
+          72.0,
+          -89.0,
+          16.0,
+          16.0
+        ],
+        "slot-305": [
+          90.0,
+          -89.0,
+          16.0,
+          16.0
+        ],
+        "slot-306": [
+          108.0,
+          -89.0,
+          16.0,
+          16.0
+        ],
+        "slot-307": [
+          126.0,
+          -89.0,
+          16.0,
+          16.0
+        ],
+        "slot-308": [
+          144.0,
+          -89.0,
+          16.0,
+          16.0
+        ]
+      }
+    }
+  }
+}
