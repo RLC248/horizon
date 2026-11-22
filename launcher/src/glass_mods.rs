@@ -33,7 +33,7 @@ impl Launcher {
             && m.text.text().is_empty()
         {
             // Results come in pages: only a last page gives the real count.
-            if m.more {
+            if m.next_offset.is_some() {
                 return tr("Search Horizon mods").into();
             }
             trf(
@@ -538,9 +538,8 @@ impl Launcher {
     /// The list's More, under `list` while the source has more pages.
     fn glass_mods_more(&self, mut list: Div, cx: &mut Context<Self>) -> Div {
         let t = self.theme;
-        if self.mods.more {
+        if let Some(offset) = self.mods.next_offset {
             let searching = self.mods.searching;
-            let offset = self.mods.results.len();
             list = list.child(
                 div().flex().p(px(8.)).child(
                     ui::quiet("mods-more", tr("More"), 36., &t)

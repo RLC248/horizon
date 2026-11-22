@@ -41,7 +41,7 @@ mod glass_mods;
 
 pub(super) enum Event {
     /// A search's answer, for the search it was (stale answers are dropped) at that offset.
-    Found(u64, usize, Result<Vec<Project>, String>),
+    Found(u64, usize, Result<browser::SearchPage, String>),
     Progress(String, f32),
     Done(Result<String, String>, bool),
     ConfirmPack {
@@ -137,7 +137,7 @@ pub(super) struct Mods {
     results_list: cull::Cull,
     installed_list: cull::Cull,
     pub(super) report_list: cull::Cull,
-    more: bool,
+    next_offset: Option<usize>,
     error: Option<String>,
     /// The failed search's own words are shown under its plain message.
     pub(super) error_details: bool,
@@ -266,7 +266,7 @@ impl Mods {
             results_list: cull::Cull::default(),
             installed_list: cull::Cull::default(),
             report_list: cull::Cull::default(),
-            more: false,
+            next_offset: None,
             error: None,
             error_details: false,
             installed: Vec::new(),
@@ -378,9 +378,8 @@ impl Mods {
     }
 
     fn next_default_page(&self) -> Option<usize> {
-        let offset = self.results.len();
-        (self.more
-            && offset < PAGE * DEFAULT_SCAN_PAGES
+        let offset = self.next_offset?;
+        (offset < PAGE * DEFAULT_SCAN_PAGES
             && self.filtered_pack_defaults()
             && self.shown().is_empty())
         .then_some(offset)
@@ -398,7 +397,7 @@ impl Mods {
         self.searching = false;
         self.searched = false;
         self.error = None;
-        self.more = false;
+        self.next_offset = None;
         self.results.clear();
         self.results_list.reset();
     }
@@ -641,10 +640,11 @@ impl Launcher {
                     m.searching = false;
                     m.searched = true;
                     match result {
-                        Ok(found) => {
-                            m.more = found.len() == PAGE;
-                            m.results.truncate(offset);
+                        Ok(page) => {
+                            let found = page.projects;
+                            m.next_offset = page.next_offset;
                             if offset == 0 {
+                                m.results.clear();
                                 m.results_list.reset();
                             }
                             m.results.extend(found.iter().cloned());
@@ -655,7 +655,7 @@ impl Launcher {
                         Err(e) => {
                             if offset == 0 {
                                 m.results.clear();
-                                m.more = false;
+                                m.next_offset = None;
                                 m.results_list.reset();
                             }
                             m.error = Some(e);
@@ -794,7 +794,7 @@ impl Launcher {
             let query = self.mods.new_query();
             if !keep {
                 self.mods.results.clear();
-                self.mods.more = false;
+                self.mods.next_offset = None;
                 self.mods.results_list.reset();
             }
             self.mods.installed_list.reset();
@@ -819,11 +819,11 @@ impl Launcher {
         std::thread::spawn(move || {
             let result = browser::source(source)
                 .ok_or_else(|| trf("{source} isn't set up.", &[("source", source.label())]))
-                .and_then(|s| s.search(&query));
+                .and_then(|s| s.search_page(&query));
             let about: HashMap<String, Vec<String>> = match (&result, source) {
-                (Ok(found), SourceId::Horizon) => {
+                (Ok(page), SourceId::Horizon) => {
                     let instance = horizon_launcher::instances::selected();
-                    found
+                    page.projects
                         .iter()
                         .map(|p| {
                             let lines = horizon::trust_and_capabilities(&p.id, Some(&instance));
@@ -2317,12 +2317,11 @@ impl Launcher {
     fn mods_more(&self, mut out: Div, cx: &mut Context<Self>) -> Div {
         let t = self.theme;
         let m = &self.mods;
-        if m.more {
+        if let Some(offset) = m.next_offset {
             let mut more = button("mods-more", "More", Kind::Ghost, &t);
             if m.searching {
                 more = disabled(more);
             } else {
-                let offset = m.results.len();
                 more = more.on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                     this.mods_search(offset);
                     cx.notify();
@@ -2488,7 +2487,7 @@ mod tests {
             let mut rejected = project(mods.kind, mods.source());
             rejected.blocked = Some("Incompatible".into());
             mods.results = vec![rejected.clone(); PAGE];
-            mods.more = true;
+            mods.next_offset = Some(PAGE);
             assert_eq!(mods.next_default_page(), None);
 
             mods.text.set(String::new());
@@ -2504,11 +2503,14 @@ mod tests {
             assert!(mods.error.is_none() && mods.searching);
 
             mods.results.resize(2 * PAGE, rejected.clone());
+            mods.next_offset = Some(2 * PAGE);
             assert_eq!(mods.next_default_page(), Some(2 * PAGE));
             mods.results.resize(DEFAULT_SCAN_PAGES * PAGE, rejected);
+            mods.next_offset = Some(DEFAULT_SCAN_PAGES * PAGE);
             assert_eq!(mods.next_default_page(), None);
-            assert!(mods.more);
+            assert_eq!(mods.next_offset, Some(DEFAULT_SCAN_PAGES * PAGE));
             mods.results.truncate(PAGE);
+            mods.next_offset = Some(2 * PAGE);
             mods.results.push(project(mods.kind, mods.source()));
             assert_eq!(mods.next_default_page(), None);
             mods.reset_browse_context();
