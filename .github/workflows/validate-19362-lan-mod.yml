@@ -1,0 +1,47 @@
+name: Build the PR 19362 LAN proof mod
+on:
+  push:
+    branches: [validation/19362-lan-mod]
+permissions:
+  contents: read
+jobs:
+  wasm-mod:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          fetch-depth: 8
+      - name: Build the matching mod tool and the game standard library
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_rev=ff9bb08f875ac1e8a5268412015b8b97a8881df2
+          git merge-base --is-ancestor "$source_rev" HEAD
+          test -z "$(git diff --name-only "$source_rev" -- crates tools Cargo.toml Cargo.lock)"
+          version="$(cat tools/ci/rust-version)"
+          rustup toolchain install "$version" --profile minimal --component rust-src --target wasm32-unknown-unknown
+          rustup default "$version"
+          cargo build --locked -p cargo-horizon-mod
+          mkdir validation-output
+          target/debug/cargo-horizon-mod horizon-mod wasm-std validation-output/horizon-wasm-std.wasm
+      - name: Package the storage fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$PWD"
+          cd docs/modding/examples/lan-menu-proof
+          "$root/target/debug/cargo-horizon-mod" horizon-mod build --wasm
+          cp target/horizon-mod/lan_menu_proof.hmod "$root/validation-output/"
+          cd "$root/validation-output"
+          sha256sum horizon-wasm-std.wasm lan_menu_proof.hmod > SHA256SUMS
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: horizon-pr-19362-proof-mod
+          path: validation-output/
+          retention-days: 3
+          if-no-files-found: error
