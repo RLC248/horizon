@@ -1,0 +1,6 @@
+id = "transition_proof"
+name = "Dimension Transition Proof"
+version = "0.1.0"
+description = "Shows the values from the dimension transition draw hook."
+api = "0.2"
+side = "client"

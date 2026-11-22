@@ -1,0 +1,102 @@
+name: Build dimension transition proof
+on:
+  push:
+    branches: [validation/19292-windows]
+permissions:
+  contents: read
+env:
+  PROOF_SOURCE: 8d407e85147b50641c4b6aeee8ea5b295d059136
+  CARGO_INCREMENTAL: '0'
+  CARGO_PROFILE_DEV_DEBUG: '0'
+  CARGO_PROFILE_TEST_DEBUG: '0'
+  CARGO_BUILD_JOBS: '2'
+jobs:
+  windows:
+    strategy:
+      fail-fast: false
+      matrix:
+        kind: [game, tests]
+    runs-on: windows-latest
+    timeout-minutes: 95
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 8d407e85147b50641c4b6aeee8ea5b295d059136
+          persist-credentials: false
+      - name: Build from the exact PR head
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $head = git rev-parse HEAD
+          if ($head -ne $env:PROOF_SOURCE) { throw "Unexpected checkout $head" }
+          $version = (Get-Content tools/ci/rust-version -Raw).Trim()
+          rustup toolchain install $version --profile minimal --component rust-src --target wasm32-unknown-unknown
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $env:RUSTUP_TOOLCHAIN = $version
+          $env:CARGO_TARGET_DIR = Join-Path $env:RUNNER_TEMP 'hzt'
+          $null = New-Item -ItemType Directory -Path validation-output
+          if ('${{ matrix.kind }}' -eq 'game') {
+            $env:HORIZON_NIGHTLY = "PR #19292 $($head.Substring(0,12))"
+            $env:CARGO_PROFILE_FAST_OPT_LEVEL = '1'
+            cargo build --locked --profile fast -p horizon-game -p horizon-client-lib --bin horizon-client --bin horizon-ctl --features horizon-game/testing
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+            foreach ($name in @('horizon-client.exe', 'horizon-ctl.exe')) {
+              Copy-Item -LiteralPath (Join-Path $env:CARGO_TARGET_DIR "fast/$name") -Destination validation-output
+            }
+          } else {
+            cargo test --locked -p horizon-client --lib --no-run
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+            $tests = @(Get-ChildItem (Join-Path $env:CARGO_TARGET_DIR 'debug/deps') -Filter 'horizon_client-*.exe' -File)
+            if ($tests.Count -ne 1) { throw "Expected one test binary, found $($tests.Count)" }
+            $fixture = 'dimension_transition_draw_distinguishes_login_death_respawn_and_travel'
+            $registered = & $tests[0].FullName --list
+            if ($LASTEXITCODE -or @($registered | Select-String $fixture).Count -ne 1) { throw "Missing $fixture" }
+            Copy-Item -LiteralPath $tests[0].FullName -Destination validation-output/client-tests.exe
+          }
+          $hashes = @{}
+          Get-ChildItem validation-output -File | ForEach-Object { $hashes[$_.Name] = (Get-FileHash $_.FullName -Algorithm SHA256).Hash }
+          @{ source = $head; sha256 = $hashes; rust = $version } | ConvertTo-Json | Set-Content validation-output/source.json -Encoding utf8
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: horizon-19292-${{ matrix.kind }}-8d407e85147b
+          path: validation-output/
+          retention-days: 3
+          if-no-files-found: error
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          path: validation
+          persist-credentials: false
+          sparse-checkout: validation/19292-probe
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 8d407e85147b50641c4b6aeee8ea5b295d059136
+          path: horizon
+          persist-credentials: false
+      - name: Build test-only WASM screen against the exact PR head
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir output
+          out="$PWD/output"
+          cp -R validation/validation/19292-probe horizon/transition-probe
+          cd horizon
+          test "$(git rev-parse HEAD)" = "$PROOF_SOURCE"
+          export RUSTUP_TOOLCHAIN="$(cat tools/ci/rust-version)"
+          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --component rust-src --target wasm32-unknown-unknown
+          cargo build --locked -p cargo-horizon-mod
+          "$PWD/target/debug/cargo-horizon-mod" wasm-std "$out/horizon-wasm-std.wasm"
+          cd transition-probe
+          ../target/debug/cargo-horizon-mod build --wasm
+          cp target/horizon-mod/transition_proof.hmod "$out/"
+          cd "$out"
+          sha256sum *.wasm *.hmod > SHA256SUMS
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: horizon-19292-wasm-probe
+          path: output/
+          retention-days: 3
+          if-no-files-found: error
