@@ -3318,33 +3318,73 @@ def grid_items(game):
 
 
 def check_recipes(host, guest, out):
-    def toggle_craftable(book):
+    def open_book(game):
+        book = game('screen').get('recipe_book')
+        assert book, f"{game.name}: the inventory has no recipe book"
+        if not book['open']:
+            game.raw('click-at', *centre(book['targets'][0]))
+            game.wait(5)
+            book = game('screen')['recipe_book']
+        return book
+
+    def set_craftable_filter(game, book, enabled):
+        if book['filtering'] == enabled:
+            return book
         button = next(rect for rect in book['targets'] if rect[2:] == [26.0, 16.0])
-        guest.raw('click-at', *centre(button))
-        guest.wait(5)
-        return guest('screen')['recipe_book']
+        game.raw('click-at', *centre(button))
+        game.wait(5)
+        book = game('screen')['recipe_book']
+        assert book['filtering'] == enabled, f'{game.name}: unexpected recipe filter: {book}'
+        return book
+
+    def check_popup_closes(game, book, close_key, reopen):
+        for rect in book['targets']:
+            if rect[2:] != [25.0, 25.0]:
+                continue
+            game.raw('click-at', *centre(rect), 'right')
+            game.wait(2)
+            targets = game('screen')['recipe_book']['targets']
+            if targets and all(r[2:] == [24.0, 24.0] for r in targets):
+                break
+        else:
+            raise AssertionError(f'{game.name}: no alternatives popup opened: {book}')
+        game.shot(out, f'recipe-overlay-{close_key}-before')
+        game.raw('key', close_key, 'tap')
+        game.wait(5)
+        if reopen == 'inventory':
+            game.raw('key', 'e', 'tap')
+        else:
+            x, y, z = (int(v // 1) for v in pos_of(game))
+            game('command', command=f'setblock {x} {y} {z - 2} minecraft:furnace')
+            game.wait(5)
+            game.raw('interact', x, y, z - 2)
+        game.wait(5)
+        targets = game('screen')['recipe_book']['targets']
+        if reopen == 'furnace' and len(targets) == 1 and targets[0][2:] == [20.0, 18.0]:
+            game.raw('click-at', *centre(targets[0]))
+            game.wait(5)
+            targets = game('screen')['recipe_book']['targets']
+        game.shot(out, f'recipe-overlay-{close_key}-after')
+        assert any(r[2:] == [20.0, 18.0] for r in targets), f'{game.name}: stale popup: {targets}'
+        if reopen == 'inventory':
+            assert len(targets) > 1, f'{game.name}: the book forgot its open setting'
+        game.raw('key', 'esc', 'tap')
+        game.wait(5)
 
     guest('command', command='clear @s')
     guest('command', command='give @s minecraft:oak_log 4')
     guest.wait(40)
     guest.raw('key', 'e', 'tap')
     guest.wait(5)
-    restore_filter = False
+    filter_was_disabled = False
     try:
-        book = guest('screen').get('recipe_book')
-        assert book, 'the guest\'s inventory has no recipe book'
-        if not book['open']:
-            guest.raw('click-at', *centre(book['targets'][0]))
-            guest.wait(5)
-            book = guest('screen').get('recipe_book')
+        book = open_book(guest)
         known = book['known']
         assert known > 0, f'the guest\'s book is empty: {book}'
         # Search, paging and tabs also export targets. The craftable filter
         # keeps earlier checks' recipe unlocks from affecting the selection.
-        if not book['filtering']:
-            book = toggle_craftable(book)
-            restore_filter = book['filtering']
-        assert book['filtering'], f"the guest's book did not filter: {book}"
+        filter_was_disabled = not book['filtering']
+        book = set_craftable_filter(guest, book, True)
         recipes = [rect for rect in book['targets'] if rect[2:] == [25.0, 25.0]]
         assert recipes, f"the guest's book has no craftable recipe buttons: {book}"
         guest.raw('click-at', *centre(recipes[0]))
@@ -3352,14 +3392,8 @@ def check_recipes(host, guest, out):
         grid = grid_items(guest)
         guest.shot(out, 'recipes')
     finally:
-        if restore_filter:
-            # The alternatives popup below needs the uncraftable entries too.
-            book = guest('screen')['recipe_book']
-            if not book['open']:
-                guest.raw('click-at', *centre(book['targets'][0]))
-                guest.wait(5)
-                book = guest('screen')['recipe_book']
-            toggle_craftable(book)
+        if filter_was_disabled:
+            set_craftable_filter(guest, open_book(guest), False)
         guest.raw('key', 'esc', 'tap')
         guest.wait(5)
     assert any('oak_log' in str(item) for item in grid.values()), f'nothing placed in the grid: {grid}'
@@ -3373,43 +3407,20 @@ def check_recipes(host, guest, out):
         for close_key, reopen in (('e', 'inventory'), ('esc', 'furnace')):
             game.raw('key', 'e', 'tap')
             game.wait(5)
-            book = game('screen')['recipe_book']
-            if len(book['targets']) == 1:
-                game.raw('click-at', *centre(book['targets'][0]))
-                game.wait(5)
-                book = game('screen')['recipe_book']
-            for rect in book['targets']:
-                if rect[2:] != [25.0, 25.0]:
-                    continue
-                game.raw('click-at', *centre(rect), 'right')
-                game.wait(2)
-                targets = game('screen')['recipe_book']['targets']
-                if targets and all(r[2:] == [24.0, 24.0] for r in targets):
-                    break
-            else:
-                raise AssertionError(f'{game.name}: no alternatives popup opened: {book}')
-            game.shot(out, f'recipe-overlay-{close_key}-before')
-            game.raw('key', close_key, 'tap')
-            game.wait(5)
-            if reopen == 'inventory':
-                game.raw('key', 'e', 'tap')
-            else:
-                x, y, z = (int(v // 1) for v in pos_of(game))
-                game('command', command=f'setblock {x} {y} {z - 2} minecraft:furnace')
-                game.wait(5)
-                game.raw('interact', x, y, z - 2)
-            game.wait(5)
-            targets = game('screen')['recipe_book']['targets']
-            if reopen == 'furnace' and len(targets) == 1 and targets[0][2:] == [20.0, 18.0]:
-                game.raw('click-at', *centre(targets[0]))
-                game.wait(5)
-                targets = game('screen')['recipe_book']['targets']
-            game.shot(out, f'recipe-overlay-{close_key}-after')
-            assert any(r[2:] == [20.0, 18.0] for r in targets), f'{game.name}: stale popup: {targets}'
-            if reopen == 'inventory':
-                assert len(targets) > 1, f'{game.name}: the book forgot its open setting'
-            game.raw('key', 'esc', 'tap')
-            game.wait(5)
+            book = open_book(game)
+            filter_was_enabled = book['filtering']
+            try:
+                # The alternatives popup needs the entries the player cannot craft.
+                book = set_craftable_filter(game, book, False)
+                check_popup_closes(game, book, close_key, reopen)
+            finally:
+                if filter_was_enabled:
+                    back_to_game(game)
+                    game.raw('key', 'e', 'tap')
+                    game.wait(5)
+                    set_craftable_filter(game, open_book(game), True)
+                    game.raw('key', 'esc', 'tap')
+                    game.wait(5)
     return {'known': known, 'grid': grid}
 
 
