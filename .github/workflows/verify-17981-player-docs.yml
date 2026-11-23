@@ -1,0 +1,48 @@
+name: Verify the player health contribution
+on:
+  push:
+    branches: [validation/17981-player-docs]
+permissions:
+  contents: read
+jobs:
+  docs:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: e2a0ebc553072a3c148fb4b7d55b554c83382dc2
+          fetch-depth: 0
+          filter: blob:none
+          persist-credentials: false
+      - name: Run the scoped contribution checks
+        run: |
+          set -o pipefail
+          test "$(git rev-parse HEAD)" = e2a0ebc553072a3c148fb4b7d55b554c83382dc2
+          git remote add upstream https://github.com/horizon-rust/horizon.git
+          git fetch --no-tags upstream main
+          python3 tools/pr_ready.py --base upstream/main | tee "$RUNNER_TEMP/pr-ready.md"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: pr-ready
+          path: ${{ runner.temp }}/pr-ready.md
+          if-no-files-found: warn
+          retention-days: 3
+      - name: Compile the documentation example against the public mod API
+        if: always()
+        run: |
+          test "$(git rev-parse HEAD)" = e2a0ebc553072a3c148fb4b7d55b554c83382dc2
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path("docs/modding/src/how-to/entities/server-services-and-players.md")
+          chapter = path.read_text().split("## Health and network entity ID", 1)[1]
+          fence = chr(96) * 3
+          example = chapter.split(fence + "rust" + chr(10), 1)[1].split(fence, 1)[0]
+          dest = Path("crates/horizon-mod-api/examples/check_17981.rs")
+          dest.parent.mkdir(exist_ok=True)
+          dest.write_text(example + "fn main() { let _ = player_health; }" + chr(10))
+          PY
+          version=$(cat tools/ci/rust-version)
+          rustup toolchain install "$version" --profile minimal
+          cargo +"$version" check --locked -p horizon-mod-api --example check_17981
