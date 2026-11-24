@@ -76,6 +76,8 @@ struct Live {
     /// The scene's blocks its small level holds: what the animate ticks pick among.
     picks: Vec<[i32; 3]>,
     engine: ParticleEngine,
+    /// Particles supplied when this scene starts, to be added on its first advancing tick.
+    queued_particles: Vec<(ParticleOptions, [f64; 3], [f64; 3])>,
     /// One per scene entity, in order.
     mobs: Vec<Mob>,
     /// Geometry scratch, kept so a frame allocates none.
@@ -250,7 +252,7 @@ impl Game<'_> {
         let ordinary = lives(scene);
         let can_tick = scene.clock.is_some()
             && mod_api::__private::has_part_hook(mod_api::HookId::BlockEntitySceneTick);
-        if !ordinary && !can_tick {
+        if !ordinary && scene.clock.is_none() {
             return self.draw_scene_quads(batch, blocks, frame, None, |_| {});
         }
         let owner = mod_api::content::crash::current_native_mod().unwrap_or("");
@@ -267,28 +269,34 @@ impl Game<'_> {
         let key = scene_key(blocks.cells);
         let matching = at.filter(|&i| {
             let l = &scenes.live[i];
-            l.key == key
+            scene.clock.is_some_and(|clock| clock.tick >= l.tick)
+                && l.key == key
                 && (!can_tick || same_block_entities(blocks.cells, &l.block_entities))
                 && l.entities
                     .iter()
                     .eq(scene.entities.iter().map(|e| &e.entity))
         });
         if !ordinary {
-            let ticking = matching.map_or_else(
-                || {
-                    blocks.cells.iter().filter_map(|b| b.entity).any(|entity| {
-                        mod_api::__private::scene_block_entity_ticker(&entity.id.to_string())
-                            .is_some()
-                    })
-                },
-                |i| {
-                    scenes.live[i]
-                        .block_entities
-                        .iter()
-                        .any(|entry| entry.ticking.is_some())
-                },
-            );
-            if !ticking {
+            let ticking = can_tick
+                && matching.map_or_else(
+                    || {
+                        blocks.cells.iter().filter_map(|b| b.entity).any(|entity| {
+                            mod_api::__private::scene_block_entity_ticker(&entity.id.to_string())
+                                .is_some()
+                        })
+                    },
+                    |i| {
+                        scenes.live[i]
+                            .block_entities
+                            .iter()
+                            .any(|entry| entry.ticking.is_some())
+                    },
+                );
+            let has_particles = matching.is_some_and(|i| {
+                let live = &scenes.live[i];
+                !live.queued_particles.is_empty() || live.engine.group_count() != 0
+            });
+            if !ticking && !has_particles {
                 self.draw_scene_quads(batch, blocks, frame, None, |_| {})?;
                 // Removing a ticking input retires its previous animation, even when the
                 // replacement no longer has anything that animates.
@@ -300,7 +308,7 @@ impl Game<'_> {
         }
         let clock = check(frame.rect, scene, frame.view)?;
         // Checked whole before anything is kept; an empty list allocates nothing.
-        let added = scene
+        let mut added = scene
             .particles
             .iter()
             .zip(0u32..)
@@ -321,7 +329,6 @@ impl Game<'_> {
                 existing.push((index as usize, mob));
             }
         }
-        let matching = matching.filter(|&i| clock.tick >= scenes.live[i].tick);
         let frame_id = self.frames;
         if !scenes.admit(frame_id, owner, clock.id) {
             // Still draw the fixed geometry, and the last state when it is this scene's.
@@ -338,7 +345,8 @@ impl Game<'_> {
         let i = if let Some(i) = matching {
             i
         } else {
-            let made = self.live_scene(blocks.cells, scene, owner, clock, key, can_tick)?;
+            let mut made = self.live_scene(blocks.cells, scene, owner, clock, key, can_tick)?;
+            made.queued_particles = std::mem::take(&mut added);
             match at {
                 Some(i) => {
                     scenes.live[i] = made;
@@ -485,6 +493,7 @@ impl Game<'_> {
             world,
             picks,
             engine,
+            queued_particles: Vec::new(),
             mobs,
             verts: Vec::new(),
         })
@@ -494,7 +503,8 @@ impl Game<'_> {
     /// animate ticks (`SCENE_ANIMATE_PICKS` picks among the scene's own blocks), scene-only
     /// block entity ticks, then the particles. A jump past `SCENE_CATCH_UP` resets the
     /// block entity fields to their seeds and clears particles before running the last
-    /// `SCENE_CATCH_UP` ticks. The first tick also adds `added`. Particles' sounds are dropped.
+    /// `SCENE_CATCH_UP` ticks. The first tick also adds queued and newly supplied particles.
+    /// Particles' sounds are dropped.
     fn advance_live_scene(
         &self,
         l: &mut Live,
@@ -510,10 +520,12 @@ impl Game<'_> {
             world,
             engine,
             picks,
+            queued_particles,
             ..
         } = l;
         if restart {
             engine.clear();
+            queued_particles.clear();
             for entry in &mut *block_entities {
                 if let Some((_, entity)) = &mut entry.ticking {
                     **entity = entry.seed.fields.clone();
@@ -547,9 +559,10 @@ impl Game<'_> {
             engine.seed_randoms(seed, seed.rotate_left(21), seed.rotate_left(42));
             engine.seed_particle_randoms(seed.rotate_left(53));
             if tick == first {
-                for (options, at, velocity) in added {
+                for (options, at, velocity) in queued_particles.iter().chain(added) {
                     engine.add(options, *at, *velocity);
                 }
+                queued_particles.clear();
             }
             if clock.animate_blocks {
                 animate_scene(self.res.animate(), engine, &ctx, picks, SCENE_ANIMATE_PICKS);

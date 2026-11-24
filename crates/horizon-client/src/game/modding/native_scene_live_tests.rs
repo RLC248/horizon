@@ -543,6 +543,45 @@ fn a_furnaces_particles_replay_pause_step_and_start_over_from_the_last_twenty_ti
 
 #[test]
 #[ignore = "daily"]
+fn a_particle_only_scene_spawns_once_and_keeps_drawing_without_new_particles() {
+    crate::game::native_entity_refs::tests::with_client_game(|game| {
+        let scene =
+            Scene::new(Vec::new()).with_clock(SceneClock::new(27, 7, 0.0).animate_blocks(false));
+        let puff = smoke([0.5, 0.5, 0.5], [0.0; 3]);
+        let initial = scene.clone().with_particles(vec![puff.clone()]);
+        assert_eq!(draw(game, &initial, view()).0, Ok(()));
+        assert_eq!(game.scene_tick("", 27), Some(7));
+        assert!(game.scene_particles("", 27).is_empty());
+
+        // Repainting the same tick does not queue either copy again.
+        run(game, &scene.clone().with_particles(vec![puff; 2]), [7]);
+        run(game, &scene, [8]);
+        let live = game.scene_particles("", 27);
+        assert_eq!(live.len(), 1);
+
+        let mut paused = scene.clone();
+        paused.clock.as_mut().unwrap().tick = 8;
+        let (result, vertices) = draw(game, &paused, view());
+        assert_eq!(result, Ok(()));
+        assert!(
+            vertices > 0,
+            "the live particle is drawn without any new particles"
+        );
+        assert_eq!(game.scene_particles("", 27), live);
+
+        run(game, &scene, [9]);
+        let aged = game.scene_particles("", 27);
+        assert_eq!(aged.len(), 1);
+        assert_eq!(aged[0].2, live[0].2 + 1);
+
+        // Rewinding the clock retires the particle with the old scene.
+        run(game, &scene, [7]);
+        assert!(game.scene_particles("", 27).is_empty());
+    });
+}
+
+#[test]
+#[ignore = "daily"]
 fn a_scene_holds_at_most_512_live_particles_the_blocks_own_counted() {
     crate::game::native_entity_refs::tests::with_client_game(|game| {
         let blocks = vec![mod_api::SceneBlock::new([0, 0, 0], lit_furnace(game), None)];
