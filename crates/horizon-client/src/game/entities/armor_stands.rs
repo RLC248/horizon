@@ -2412,7 +2412,7 @@ mod stack_equip_tests {
 
         // The item's own component answers while the stack removes it.
         let mut items = Items::for_tests(Default::default());
-        items.items.insert(
+        Arc::make_mut(&mut items.items).insert(
             "minecraft:iron_helmet".into(),
             ItemInfo {
                 equip_slot: Some("head".into()),

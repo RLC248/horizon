@@ -658,6 +658,7 @@ struct WorldCore {
 }
 
 struct WorldRest {
+    table_inputs: WorldTableInputs,
     items: Arc<Items>,
     recipes: Arc<Recipes>,
     transformers: horizon_client::block_transform::Transformers,
@@ -682,10 +683,19 @@ struct WorldRest {
     stations: Arc<horizon_client::stations::StationData>,
 }
 
+struct WorldTableInputs {
+    root: PathBuf,
+    content: horizon_assets::resource_source::ResourceSource,
+    conditions: horizon_world::conditions::LoadConditions,
+    registry: &'static horizon_world::registry::BlockRegistry,
+    recipes_use_class_tags: bool,
+}
+
 /// The content tables a world's data packs change, loaded when the world
 /// opens and on `/reload`: `ReloadableServerResources` loads a server's
 /// recipes, loot tables and tags from the world's pack stack, over the
-/// resource root's own. Worlds without packs use `Resources.rest` directly.
+/// resource root's own. A matching startup load can provide shared tables
+/// while the world retains its own registry bindings.
 struct WorldTables {
     conditions: horizon_world::conditions::LoadConditions,
     suffocation: horizon_world::suffocation::SuffocationRegistry<'static>,
@@ -693,8 +703,8 @@ struct WorldTables {
     /// them), for the advancement tree reload and the loot data.
     files: Vec<(String, Vec<Vec<u8>>)>,
     items: Arc<Items>,
-    recipes: Recipes,
-    stations: horizon_client::stations::StationData,
+    recipes: Arc<Recipes>,
+    stations: Arc<horizon_client::stations::StationData>,
     reload_sources: Option<Arc<horizon_client::crafting::ResolvedSources>>,
     /// The values of the data map types native mods registered (`native_data_map_types`).
     data_maps: native_data_maps::DataMaps,

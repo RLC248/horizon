@@ -62,7 +62,7 @@ pub(super) fn load_world_rest(
         let recipes = startup::time("rest.recipes", || {
             Recipes::from_resolved(root, &items, overlay, &sources)
         })?;
-        let stations = startup::time("rest.stations", || {
+        let mut stations = startup::time("rest.stations", || {
             horizon_client::stations::StationData::from_sources(
                 root,
                 &items,
@@ -71,7 +71,13 @@ pub(super) fn load_world_rest(
                 (&sources, &recipes),
             )
         });
-        Ok((items, recipes, stations))
+        stations.trades.professions = stations.professions.clone();
+        Ok((
+            items,
+            recipes,
+            stations,
+            class_tags::used_by_recipes(&sources),
+        ))
     };
     let load_behaviours = || {
         startup::time("rest.behaviours", || {
@@ -286,7 +292,7 @@ pub(super) fn load_world_rest(
             }),
         )
     };
-    let (items, recipes, stations) = items?;
+    let (items, recipes, stations, recipes_use_class_tags) = items?;
     let (animate, fog) = animate?;
     let (mob_types, mob_data) = mobs?;
     let (transformers, (player_type, player_arm, player_arm_slim, spin_attack)) = transformers?;
@@ -302,6 +308,13 @@ pub(super) fn load_world_rest(
     );
     progress.set(8);
     Ok(WorldRest {
+        table_inputs: WorldTableInputs {
+            root: root.to_owned(),
+            content: resource_root.data_changes().clone(),
+            conditions,
+            registry,
+            recipes_use_class_tags,
+        },
         stations: Arc::new(stations),
         items: Arc::new(items),
         recipes: Arc::new(recipes),

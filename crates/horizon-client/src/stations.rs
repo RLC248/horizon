@@ -19,6 +19,7 @@ use serde_json::Value;
 use std::{collections::HashSet, fs, path::Path, sync::Arc};
 
 /// Everything the workstation menus read, loaded once with the resources.
+#[derive(Clone)]
 pub struct StationData {
     /// The same registry `Items` carries (`Items::enchantments`).
     pub enchantments: std::sync::Arc<Enchantments>,
@@ -769,7 +770,7 @@ impl ParsedStationRecipe {
         }
     }
 }
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct StationRecipes {
     pub smithing: Vec<Smithing>,
     /// Sorted by recipe id, the registry order vanilla lists them in.

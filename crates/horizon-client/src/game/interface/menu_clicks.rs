@@ -1019,7 +1019,7 @@ mod stack_component_click_tests {
     #[test]
     fn an_armour_slot_click_reads_the_stacks_equippable() {
         let mut items = Items::for_tests(Default::default());
-        items.items.insert(
+        Arc::make_mut(&mut items.items).insert(
             "minecraft:iron_helmet".into(),
             ItemInfo {
                 equip_slot: Some("head".into()),

@@ -25,7 +25,7 @@ fn holding(item: &str, inside: &[(&str, u32)]) -> ItemStack {
 fn a_saved_bundle_releases_stacks_against_the_world_prototypes() {
     let ore = "minecraft:iron_ore";
     let mut items = Items::empty();
-    items.items.insert(
+    std::sync::Arc::make_mut(&mut items.items).insert(
         "minecraft:bundle".into(),
         crate::items::ItemInfo {
             bundle: true,
@@ -33,7 +33,7 @@ fn a_saved_bundle_releases_stacks_against_the_world_prototypes() {
             ..Default::default()
         },
     );
-    items.items.insert(
+    std::sync::Arc::make_mut(&mut items.items).insert(
         ore.into(),
         crate::items::ItemInfo {
             max_stack: 64,

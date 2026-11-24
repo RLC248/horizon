@@ -2,6 +2,39 @@
 //! resources' background load, and the world's own content tables.
 use super::*;
 
+fn same_component_damage_registry(
+    items: &Items,
+    damage: &horizon_world::damage_source::Catalog,
+) -> bool {
+    let ids = items.component_registry.ids("minecraft:damage_type");
+    ids.len() == damage.entries().count()
+        && damage
+            .entries()
+            .all(|(_, entry)| ids.binary_search(&entry.name).is_ok())
+        && items
+            .component_registry
+            .tags("minecraft:damage_type")
+            .iter()
+            .map(String::as_str)
+            .eq(damage.tags())
+}
+
+fn same_enchantment_damage_tags(
+    items: &Items,
+    damage: &horizon_world::damage_source::Catalog,
+) -> bool {
+    let tags = &items.enchantments.damage_tags;
+    tags.len() == damage.tags().count()
+        && damage.tags().all(|tag| {
+            tags.get(tag).is_some_and(|members| {
+                members.len() == damage.tag_members(tag).count()
+                    && damage
+                        .tag_members(tag)
+                        .all(|member| members.contains(member))
+            })
+        })
+}
+
 impl Game<'_> {
     /// The server's data-pack enchantments, or the local world's registry.
     pub(super) fn item_enchantments(&self) -> &Arc<horizon_client::enchant::Enchantments> {
@@ -233,8 +266,8 @@ impl Game<'_> {
 
     // ---- the world's data packs' content tables ---------------------------
 
-    /// The content tables the world plays with: its data packs' over the
-    /// game's own when it has packs, `Resources.rest`'s own otherwise.
+    /// The active item view, with tags and component registries for the
+    /// current world's content.
     pub(super) fn items(&self) -> &Items {
         world_items!(self)
     }
@@ -269,9 +302,8 @@ impl Game<'_> {
     pub(super) fn pack_files(&self) -> horizon_world::loot::PackOverlay<'_> {
         pack_files(&self.world_tables)
     }
-    /// Load the world's data packs' content tables (`None`: the world has no
-    /// packs, and `Resources.rest` stays in use). This re-reads the tables,
-    /// so it runs once per world open and on `/reload`.
+    /// Stage the world's content tables at world open and on `/reload`.
+    /// A fresh world with the startup inputs can share their static data.
     pub(super) fn stage_world_tables(
         &mut self,
         stack: &functions::PackStack,
@@ -290,6 +322,7 @@ impl Game<'_> {
         // recomputes the pack files it contributes every time.
         let mut contributed = Vec::new();
         self.native_data_pack_files(&mut contributed);
+        let has_native_files = !contributed.is_empty();
         let files = functions::overlay_files(stack, contributed);
         let inventory = horizon_mod_package::enabled::EnabledMods::read(root)?;
         let conditions = self.registered_load_conditions(&inventory, stack)?;
@@ -305,42 +338,87 @@ impl Game<'_> {
             &self.res.motion().health
         };
         let health = base.with_packs(root, &overlay, reload)?;
-        // With no pack, `res` holds the tables, unless content mods switched
-        // live since it was loaded: their data is in the new root.
-        let mut items = Items::load(
-            root,
-            self.pack.assets.registry,
-            self.res.facts(),
-            &overlay,
-            self.res.item_defaults(),
-        )?;
-        class_tags::install(&mut items, self.res.facts());
-        api_values::resolve_enchantment_registry(&items)?;
-        // Item damage predicates use the same frozen registry as player hurt.
-        Arc::make_mut(&mut items.enchantments).bind_damage_catalog(&health.damage);
-        items.bind_component_damage_catalog(&health.damage);
-        // The recipe tables, the stations and the recipe book read one folder:
-        // hold its files so it is read once.
-        let _recipe_files = horizon_client::json_folder::read(&root.join("data/minecraft/recipe"));
-        let sources = if reload {
-            lan::sync::prepare_server_sources(root, &self.res.core.item_data, &overlay)?
+        let shared = self.res.rest.get().filter(|rest| {
+            let inputs = &rest.table_inputs;
+            !reload
+                && !has_native_files
+                && stack.builtin.is_some()
+                && stack.enabled_packs().next().is_none()
+                && !conditions.has_registered()
+                && mod_api::__private::installed_code_ids().next().is_none()
+                && inputs.root == root
+                && inputs.content.same_generation(stack.content.source())
+                && inputs.conditions == conditions
+                && std::ptr::eq(inputs.registry, self.pack.assets.registry)
+        });
+        let (items, bindings_match) = startup::time("world.items", || -> Result<_> {
+            let mut items = if let Some(rest) = shared {
+                (*rest.items).clone()
+            } else {
+                Items::load(
+                    root,
+                    self.pack.assets.registry,
+                    self.res.facts(),
+                    &overlay,
+                    self.res.item_defaults(),
+                )?
+            };
+            class_tags::install(&mut items, self.res.facts());
+            api_values::resolve_enchantment_registry(&items)?;
+            let names_match =
+                shared.is_some() && same_component_damage_registry(&items, &health.damage);
+            let tags_match =
+                shared.is_some() && same_enchantment_damage_tags(&items, &health.damage);
+            // Bind the world-specific catalog. Equal bindings can share the
+            // startup snapshots.
+            if !tags_match {
+                Arc::make_mut(&mut items.enchantments).bind_damage_catalog(&health.damage);
+            }
+            if !names_match {
+                items.bind_component_damage_catalog(&health.damage);
+            }
+            Ok((items, names_match && tags_match))
+        })?;
+        let (recipes, stations, reload_sources) = if let Some(rest) = shared
+            && bindings_match
+            && !rest.table_inputs.recipes_use_class_tags
+        {
+            (rest.recipes.clone(), rest.stations.clone(), None)
         } else {
-            lan::sync::load_sources(
-                root,
-                &self.res.core.item_data,
-                self.options.execution_role.data_load_origin(),
-                &overlay,
-            )?
+            // Hold the recipe files while all three readers use them.
+            let _recipe_files =
+                horizon_client::json_folder::read(&root.join("data/minecraft/recipe"));
+            let sources = startup::time("world.recipe_sources", || {
+                if reload {
+                    lan::sync::prepare_server_sources(root, &self.res.core.item_data, &overlay)
+                } else {
+                    lan::sync::load_sources(
+                        root,
+                        &self.res.core.item_data,
+                        self.options.execution_role.data_load_origin(),
+                        &overlay,
+                    )
+                }
+            })?;
+            let recipes = startup::time("world.recipes", || {
+                Recipes::from_resolved(root, &items, &overlay, &sources)
+            })?;
+            let mut stations = startup::time("world.stations", || {
+                horizon_client::stations::StationData::from_sources(
+                    root,
+                    &items,
+                    &overlay,
+                    self.res.item_defaults(),
+                    (&sources, &recipes),
+                )
+            });
+            self.prepare_professions(root, &items, &mut stations)?;
+            (
+                Arc::new(recipes),
+                Arc::new(stations),
+                reload.then_some(sources),
+            )
         };
-        let recipes = Recipes::from_resolved(root, &items, &overlay, &sources)?;
-        let mut stations = horizon_client::stations::StationData::from_sources(
-            root,
-            &items,
-            &overlay,
-            self.res.item_defaults(),
-            (&sources, &recipes),
-        );
-        self.prepare_professions(root, &items, &mut stations)?;
         // The world's loaded datapack registries are a mod-declared registry's
         // authority for the data maps' id checks, as the command ids are for
         // the registries they list.
@@ -471,7 +549,7 @@ impl Game<'_> {
                 items: Arc::new(items),
                 recipes,
                 stations,
-                reload_sources: reload.then_some(sources),
+                reload_sources,
                 data_maps,
                 pack_tags,
             }),

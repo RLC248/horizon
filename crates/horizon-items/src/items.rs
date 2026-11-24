@@ -505,7 +505,8 @@ fn custom_data_tags(value: &Value) -> Option<Vec<horizon_core::nbt::Tag>> {
 
 #[derive(Clone)]
 pub struct Items {
-    pub items: HashMap<Arc<str>, ItemInfo>,
+    /// Immutable item definitions shared by local and server tag views.
+    pub items: Arc<HashMap<Arc<str>, ItemInfo>>,
     /// Shared Block.getItem snapshot, including blocks sharing another block's item.
     pub block_items: Arc<HashMap<String, String>>,
     /// Registry snapshot used to validate ingredient component payloads.
@@ -916,8 +917,7 @@ impl Items {
                     let state = registry
                         .default_state(&block)
                         .ok_or_else(|| format!("{item}: block {block:?} is not a block"))?;
-                    let info = items
-                        .items
+                    let info = Arc::make_mut(&mut items.items)
                         .get_mut(item.as_str())
                         .ok_or_else(|| format!("{item}: not an item"))?;
                     info.block = Some(state);
@@ -1194,7 +1194,7 @@ impl Items {
             root, overlay, defaults,
         )?);
         Ok(Self {
-            items,
+            items: Arc::new(items),
             block_items: Default::default(),
             component_registry: ingredient_defaults::component_registry(
                 root,
@@ -1264,7 +1264,7 @@ impl Items {
     /// A table with nothing in it: the tags a client was sent go in with `set_tags`.
     pub fn empty() -> Self {
         Self {
-            items: HashMap::new(),
+            items: Default::default(),
             block_items: Default::default(),
             component_registry: Default::default(),
             component_defaults: Default::default(),
@@ -3966,7 +3966,7 @@ mod tests {
             ("minecraft:ender_pearl", 16),
             ("minecraft:diamond_sword", 1),
         ] {
-            items.items.insert(
+            Arc::make_mut(&mut items.items).insert(
                 Arc::from(id),
                 ItemInfo {
                     id: Arc::from(id),

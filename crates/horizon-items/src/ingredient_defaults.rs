@@ -9,7 +9,7 @@ impl Items {
             root, overlay, defaults,
         )?);
         let mut items = Self {
-            items: HashMap::new(),
+            items: Default::default(),
             block_items: Default::default(),
             component_registry: component_registry(
                 root,

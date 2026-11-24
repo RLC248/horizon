@@ -789,7 +789,10 @@ mod tests {
             ));
             // The active item's limit allows a count the saved-item codec cannot read.
             let mut items = game.items().clone();
-            items.items.get_mut("minecraft:stone").unwrap().max_stack = 128;
+            Arc::make_mut(&mut items.items)
+                .get_mut("minecraft:stone")
+                .unwrap()
+                .max_stack = 128;
             game.server_items = Some(Arc::new(items));
             let mut firework = stack("minecraft:firework_rocket", 1);
             firework.data_mut().fireworks = Some((200, Vec::new()));

@@ -1457,8 +1457,7 @@ mod stack_limit_tests {
         removed.set_damage(0);
         assert!(removed.try_into_engine(&items).is_ok());
 
-        items
-            .items
+        std::sync::Arc::make_mut(&mut items.items)
             .get_mut("minecraft:diamond_sword")
             .unwrap()
             .max_damage = u32::MAX;

@@ -272,6 +272,7 @@ pub struct BrewingRecipe {
     pub reagent: PotionIngredient,
     pub output: ItemStack,
 }
+#[derive(Clone)]
 pub struct Brewing {
     pub recipes: Vec<BrewingRecipe>,
     /// `RecipePropertySet.BREWING_REAGENTS`.

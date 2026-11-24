@@ -345,6 +345,7 @@ impl Session {
 }
 
 /// The trade registries.
+#[derive(Clone)]
 pub struct Trades {
     pub professions: std::sync::Arc<crate::mobs::villager::ResolvedProfessions>,
     pub trades: HashMap<String, Value>,

@@ -3246,7 +3246,8 @@ mod enchantment_snapshot_tests {
                 .unwrap()
                 .unwrap(),
         );
-        game.world_tables.as_mut().unwrap().stations.enchantments = synced.clone();
+        let stations = &mut game.world_tables.as_mut().unwrap().stations;
+        Arc::make_mut(stations).enchantments = synced.clone();
         std::sync::Arc::make_mut(&mut game.world_tables.as_mut().unwrap().items).enchantments =
             synced;
         assert!(
@@ -3291,7 +3292,8 @@ mod enchantment_snapshot_tests {
             assert_eq!(reg.ids("minecraft:item"), item_ids);
             assert_eq!(reg.effects, effects);
         }
-        game.world_tables.as_mut().unwrap().stations.enchantments = base.clone();
+        let stations = &mut game.world_tables.as_mut().unwrap().stations;
+        Arc::make_mut(stations).enchantments = base.clone();
         std::sync::Arc::make_mut(&mut game.world_tables.as_mut().unwrap().items).enchantments =
             base;
         assert!(

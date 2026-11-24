@@ -1663,7 +1663,7 @@ mod tests {
     fn a_bundle_contents_grid_follows_the_tooltip_display() {
         // The grid is `BundleItem`'s: the table knows the bundle item.
         let mut items = Items::for_tests(Default::default());
-        items.items.insert(
+        Arc::make_mut(&mut items.items).insert(
             "minecraft:bundle".into(),
             crate::items::ItemInfo {
                 bundle: true,

@@ -74,7 +74,10 @@ mod tests {
 
         fn catalog(maximum: u32) -> Items {
             let mut items = stack_limit_tests::catalog();
-            items.items.get_mut("minecraft:stick").unwrap().max_stack = maximum;
+            Arc::make_mut(&mut items.items)
+                .get_mut("minecraft:stick")
+                .unwrap()
+                .max_stack = maximum;
             items
         }
 

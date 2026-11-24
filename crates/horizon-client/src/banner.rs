@@ -24,7 +24,7 @@ pub struct Pattern {
 }
 
 /// The pattern registry, its tags and the item components the loom reads.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Banners {
     patterns: Vec<Pattern>,
     /// `Pattern::id` -> index in `patterns` for O(1) lookup.

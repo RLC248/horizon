@@ -544,7 +544,7 @@ fn cauldron_register_to_all_and_admission_errors() {
             "{error}"
         );
         let mut items = game.items().clone();
-        items.items.remove("test:syrup_bottle");
+        Arc::make_mut(&mut items.items).remove("test:syrup_bottle");
         let mut registrar = Registrar {
             table: Table::default(),
             items: &items,

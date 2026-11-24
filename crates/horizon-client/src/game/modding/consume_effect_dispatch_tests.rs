@@ -55,8 +55,7 @@ fn a_living_handle_dispatches_custom_kinds_with_same_kind_recursion_refused() {
                 ("minecraft:pufferfish", "first:effect"),
                 ("minecraft:honey_bottle", "second:effect"),
             ] {
-                items
-                    .items
+                Arc::make_mut(&mut items.items)
                     .get_mut(item)
                     .unwrap()
                     .consumable

@@ -1543,8 +1543,8 @@ pub(super) mod interact_vibration_tests {
             let stack = game.reload_datapacks(false, &[]).unwrap();
             let root = game.options.resources.clone();
             game.world_tables = game.stage_world_tables(&stack, false, &root).unwrap().0;
-            let items =
-                &mut std::sync::Arc::make_mut(&mut game.world_tables.as_mut().unwrap().items).items;
+            let items = std::sync::Arc::make_mut(&mut game.world_tables.as_mut().unwrap().items);
+            let items = std::sync::Arc::make_mut(&mut items.items);
             let mut info = items["minecraft:fishing_rod"].clone();
             info.id = std::sync::Arc::from("ruby:rod");
             info.template = Some(std::sync::Arc::from("minecraft:fishing_rod"));
@@ -1554,8 +1554,8 @@ pub(super) mod interact_vibration_tests {
             );
             items.insert(info.id.clone(), info);
 
-            let items =
-                &mut std::sync::Arc::make_mut(&mut game.world_tables.as_mut().unwrap().items).items;
+            let items = std::sync::Arc::make_mut(&mut game.world_tables.as_mut().unwrap().items);
+            let items = std::sync::Arc::make_mut(&mut items.items);
             let mut stick_info = items["minecraft:stick"].clone();
             stick_info.id = std::sync::Arc::from("ruby:stick");
             stick_info.template = Some(std::sync::Arc::from("minecraft:stick"));

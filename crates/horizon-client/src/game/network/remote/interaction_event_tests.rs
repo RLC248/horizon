@@ -1749,7 +1749,11 @@ fn resource_gated_unknown_held_item_forced_use_predicts_pass_without_a_swing() {
                 let stack = ItemStack::new("minecraft:pig_spawn_egg", 2);
                 assert!(mod_api::__private::item_key(&stack.item).is_some());
                 let mut items = game.items().clone();
-                assert!(items.items.remove(&stack.item).is_some());
+                assert!(
+                    Arc::make_mut(&mut items.items)
+                        .remove(&stack.item)
+                        .is_some()
+                );
                 game.server_items = Some(Arc::new(items));
                 assert!(game.items().get(&stack.item).is_none());
                 game.inventory[game.selected] = Some(stack.clone());
